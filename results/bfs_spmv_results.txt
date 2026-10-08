@@ -1,0 +1,10 @@
+BFS2,dblp-2010,6.2
+SPMV,dblp-2010,1.9
+BFS2,in-2004,2.7
+SPMV,in-2004,3.5
+BFS2,soc-LiveJournal1,19.8
+SPMV,soc-LiveJournal1,9.9
+BFS2,cage15,26.3
+SPMV,cage15,8.6
+BFS2,kron_g500-logn21,17.3
+SPMV,kron_g500-logn21,28.4

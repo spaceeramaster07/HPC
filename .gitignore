@@ -1,0 +1,62 @@
+# ==========================================
+# Datasets (GitHub rejects files > 100MB; datasets are > 5GB)
+# ==========================================
+datasets/*
+!datasets/.gitkeep
+*.mtx
+*.graph
+*.bin
+
+# ==========================================
+# Python & Virtual Environments
+# ==========================================
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# ==========================================
+# C++ & CUDA Build Artifacts
+# ==========================================
+build/
+**/build/
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.out
+*.exe
+hornet_paper_benchmark
+
+# CMake build outputs
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+
+# ==========================================
+# Profiling & Diagnostics (Nsight Systems / Profiler)
+# ==========================================
+*.nsys-rep
+*.sqlite
+*.qdrep
+*.nvvp
+
+# ==========================================
+# IDEs & System Files
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

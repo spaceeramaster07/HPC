@@ -1,0 +1,10 @@
+[OVERHEAD_SUMMARY] Graph=dblp-2010 BatchSize=10000 Trials=10 Uninstrumented_ms=1.2709 Instrumented_ms=1.1764 Delta_ms=-0.0946 Overhead_pct=-7.44%
+[OVERHEAD_SUMMARY] Graph=dblp-2010 BatchSize=1000000 Trials=10 Uninstrumented_ms=9.1785 Instrumented_ms=8.8042 Delta_ms=-0.3743 Overhead_pct=-4.08%
+[OVERHEAD_SUMMARY] Graph=in-2004 BatchSize=10000 Trials=10 Uninstrumented_ms=1.5870 Instrumented_ms=1.2155 Delta_ms=-0.3715 Overhead_pct=-23.41%
+[OVERHEAD_SUMMARY] Graph=in-2004 BatchSize=1000000 Trials=10 Uninstrumented_ms=11.2582 Instrumented_ms=11.3770 Delta_ms=0.1189 Overhead_pct=1.06%
+[OVERHEAD_SUMMARY] Graph=soc-LiveJournal1 BatchSize=10000 Trials=10 Uninstrumented_ms=1.3226 Instrumented_ms=1.2945 Delta_ms=-0.0281 Overhead_pct=-2.13%
+[OVERHEAD_SUMMARY] Graph=soc-LiveJournal1 BatchSize=1000000 Trials=10 Uninstrumented_ms=13.6322 Instrumented_ms=14.0377 Delta_ms=0.4056 Overhead_pct=2.97%
+[OVERHEAD_SUMMARY] Graph=cage15 BatchSize=10000 Trials=10 Uninstrumented_ms=1.1724 Instrumented_ms=1.1679 Delta_ms=-0.0045 Overhead_pct=-0.38%
+[OVERHEAD_SUMMARY] Graph=cage15 BatchSize=1000000 Trials=10 Uninstrumented_ms=8.5712 Instrumented_ms=8.1566 Delta_ms=-0.4146 Overhead_pct=-4.84%
+[OVERHEAD_SUMMARY] Graph=kron_g500-logn21 BatchSize=10000 Trials=10 Uninstrumented_ms=1.2532 Instrumented_ms=1.0944 Delta_ms=-0.1587 Overhead_pct=-12.67%
+[OVERHEAD_SUMMARY] Graph=kron_g500-logn21 BatchSize=1000000 Trials=10 Uninstrumented_ms=12.5316 Instrumented_ms=12.8628 Delta_ms=0.3312 Overhead_pct=2.64%
