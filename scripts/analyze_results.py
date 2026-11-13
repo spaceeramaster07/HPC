@@ -1,10 +1,11 @@
-#!/home/spaceeramaster/HPCproj/.venv/bin/python3
+#!/home/spaceeramaster/HPCproj_backup/.venv/bin/python3
 """
 Analysis script for Hornet Reproduction
 Computes all statistical metrics, Amdahl's law upper bounds, and phase shares.
 Outputs Markdown tables directly usable in report.md
 """
 
+import argparse
 import os
 import sys
 import csv
@@ -12,11 +13,13 @@ import re
 from pathlib import Path
 import numpy as np
 
-RESULTS_DIR = Path("/home/spaceeramaster/HPCproj/results")
+WORKSPACE = Path(__file__).resolve().parent.parent
+RESULTS_DIR = WORKSPACE / "results" / "baseline"
 RAW_CSV = RESULTS_DIR / "raw.csv"
 MEM_FILE = RESULTS_DIR / "memory_results.txt"
 OVERHEAD_FILE = RESULTS_DIR / "overhead_results.txt"
 BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
+KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
 
 def analyze_insert_updates():
     if not RAW_CSV.exists():
@@ -200,7 +203,7 @@ def analyze_memory():
     records = []
     with open(MEM_FILE, "r") as f:
         for line in f:
-            if "[MEMORY_SUMMARY]" in line and "BA_EXP" not in line:
+            if ("[MEMORY_SUMMARY]" in line and "BA_EXP" not in line) or "[MEMORY_SUMMARY BA_EXP=23]" in line:
                 m = re.search(r"Graph=(\S+)\s+\|V\|=(\d+)\s+\|E\|=(\d+).*block_util=([\d\.]+).*ba_util=([\d\.]+).*overall_util=([\d\.]+).*ba_count=(\d+).*vram_used_bytes=(\d+).*hornet_bpe=([\d\.]+).*csr_bpe=([\d\.]+).*coo_bpe=([\d\.]+)", line)
                 if m:
                     records.append({
@@ -316,29 +319,46 @@ def print_markdown_tables():
 
     print("\n=== BFS MTEPS AND SPMV TRAVERSAL BENCHMARKS ===")
     if BFS_FILE.exists():
-        bfs_data = {}
+        print("| Graph | Hornet BFS (ms) | CSR BFS (ms) | BFS MTEPS | BFS vs CSR | Hornet SpMV (ms) | CSR SpMV (ms) | SpMV vs CSR |")
+        print("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+        bfs_rows = {}
+        spmv_rows = {}
         with open(BFS_FILE, "r") as f:
             for line in f:
                 parts = line.strip().split(",")
-                if len(parts) == 3:
-                    algo, g, ms = parts[0], parts[1], float(parts[2])
-                    bfs_data.setdefault(g, {})[algo] = ms
-        print("| Graph | BFS2 Time (ms) | SpMV Time (ms) | BFS MTEPS (approx |E|/t) |")
-        print("| :--- | :---: | :---: | :---: |")
-        # Graph edge counts
-        edges = {
-            "dblp-2010": 1615400,
-            "in-2004": 16917053,
-            "soc-LiveJournal1": 68993773,
-            "cage15": 99199551,
-            "kron_g500-logn21": 182082942
-        }
-        for g, algos in sorted(bfs_data.items()):
-            t_bfs = algos.get("BFS2", 0.0)
-            t_spmv = algos.get("SPMV", 0.0)
-            e_cnt = edges.get(g, 0)
-            mteps = (e_cnt / (t_bfs * 1000.0)) if t_bfs > 0 else 0.0
-            print(f"| {g} | {t_bfs:.2f} ms | {t_spmv:.2f} ms | {mteps:.1f} MTEPS |")
+                if not parts:
+                    continue
+                if parts[0] == "BFS" and len(parts) >= 7:
+                    g = parts[1]
+                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+                    bfs_rows[g] = kv
+                elif parts[0] == "SPMV" and len(parts) >= 5:
+                    g = parts[1]
+                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+                    spmv_rows[g] = kv
+        for g in sorted(set(bfs_rows.keys()) | set(spmv_rows.keys())):
+            b = bfs_rows.get(g, {})
+            s = spmv_rows.get(g, {})
+            print(
+                f"| {g} | {b.get('Hornet_ms', 'N/A')} | {b.get('CSR_ms', 'N/A')} | "
+                f"{b.get('Hornet_MTEPS', 'N/A')} | {b.get('Speedup_vs_CSR', 'N/A')} | "
+                f"{s.get('Hornet_ms', 'N/A')} | {s.get('CSR_ms', 'N/A')} | {s.get('Speedup_vs_CSR', 'N/A')} |"
+            )
+
+    print("\n=== DYNAMIC MAXIMAL K-TRUSS (FIG. 9) ===")
+    if KTRUSS_FILE.exists():
+        print("| Graph | Steps | Total Deleted Edges | Total Time (ms) | Peak Rate (updates/s) |")
+        print("| :--- | :---: | :---: | :---: | :---: |")
+        with open(KTRUSS_FILE, "r") as f:
+            for line in f:
+                if line.startswith("KTRUSS_SUMMARY,"):
+                    parts = line.strip().split(",")
+                    g = parts[1]
+                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+                    print(
+                        f"| {g} | {kv.get('steps', 'N/A')} | {int(kv.get('total_deleted', 0)):,} | "
+                        f"{kv.get('total_ms', 'N/A')} | {int(kv.get('peak_rate_upd_s', 0)):,} |"
+                    )
 
     print("\n=== TASK 7: PHASE HOTSPOT RANKINGS BY MEASURED SHARE ===")
     for h in hotspots_table:

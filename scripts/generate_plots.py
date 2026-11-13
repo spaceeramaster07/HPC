@@ -1,9 +1,10 @@
-#!/home/spaceeramaster/HPCproj/.venv/bin/python3
+#!/home/spaceeramaster/HPCproj_backup/.venv/bin/python3
 """
 Plotting Script for Hornet Reproduction
 Generates all publication-quality figures for report.md
 """
 
+import argparse
 import os
 import sys
 import csv
@@ -17,7 +18,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = Path("/home/spaceeramaster/HPCproj/results")
+WORKSPACE = Path(__file__).resolve().parent.parent
+RESULTS_DIR = WORKSPACE / "results" / "baseline"
 RAW_CSV = RESULTS_DIR / "raw.csv"
 MEM_FILE = RESULTS_DIR / "memory_results.txt"
 OVERHEAD_FILE = RESULTS_DIR / "overhead_results.txt"
@@ -213,7 +215,7 @@ def plot_memory_utilization():
 
     with open(MEM_FILE, "r") as f:
         for line in f:
-            if "[MEMORY_SUMMARY]" in line and "BA_EXP" not in line:
+            if ("[MEMORY_SUMMARY]" in line and "BA_EXP" not in line) or "[MEMORY_SUMMARY BA_EXP=23]" in line:
                 m_g = re.search(r"Graph=(\S+)", line)
                 m_bu = re.search(r"block_util=([\d\.]+)", line)
                 m_bau = re.search(r"ba_util=([\d\.]+)", line)

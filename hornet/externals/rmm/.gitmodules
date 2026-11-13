@@ -1,3 +1,0 @@
-[submodule "thirdparty/cnmem"]
-	path = thirdparty/cnmem
-	url = git@github.com:NVIDIA/cnmem.git
