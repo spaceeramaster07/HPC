@@ -127,21 +127,18 @@ static bool verify_delete_correctness(const HornetGraph& graph,
     return true;
 }
 
-static void run_bench_insert(const std::string& graph_path,
-                             int batch_size,
-                             int num_warmup,
-                             int num_trials,
-                             uint64_t base_seed,
-                             bool remove_graph_dups,
-                             bool verify,
-                             bool enable_profiling,
-                             int ba_exp) {
-    std::string graph_name = get_graph_name(graph_path);
+static void run_bench_insert_csr(const std::string& graph_name,
+                                 const CSRGraph& csr,
+                                 int batch_size,
+                                 int num_warmup,
+                                 int num_trials,
+                                 uint64_t base_seed,
+                                 bool remove_graph_dups,
+                                 bool verify,
+                                 bool enable_profiling,
+                                 int ba_exp) {
     std::string flags = remove_graph_dups ? "--graph-dedup" : "--no-dedup";
     size_t max_edges_per_ba = 1ULL << ba_exp;
-
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
 
     HornetProfiler::instance().set_enabled(enable_profiling);
     BatchWorkspace ws;
@@ -205,18 +202,15 @@ static void run_bench_insert(const std::string& graph_path,
     }
 }
 
-static void run_bench_delete(const std::string& graph_path,
-                             int batch_size,
-                             int num_warmup,
-                             int num_trials,
-                             uint64_t base_seed,
-                             bool enable_profiling,
-                             bool verify) {
-    std::string graph_name = get_graph_name(graph_path);
+static void run_bench_delete_csr(const std::string& graph_name,
+                                 const CSRGraph& csr,
+                                 int batch_size,
+                                 int num_warmup,
+                                 int num_trials,
+                                 uint64_t base_seed,
+                                 bool enable_profiling,
+                                 bool verify) {
     std::string flags = "--delete";
-
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
 
     HornetProfiler::instance().set_enabled(enable_profiling);
     BatchWorkspace ws;
@@ -263,10 +257,7 @@ static void run_bench_delete(const std::string& graph_path,
     }
 }
 
-static void run_bench_init(const std::string& graph_path, int num_trials) {
-    std::string graph_name = get_graph_name(graph_path);
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
+static void run_bench_init_csr(const std::string& graph_name, const CSRGraph& csr, int num_trials) {
 
     HornetProfiler::instance().set_enabled(true);
 
@@ -294,10 +285,7 @@ static void run_bench_init(const std::string& graph_path, int num_trials) {
     }
 }
 
-static void run_bench_memory(const std::string& graph_path, int ba_exp) {
-    std::string graph_name = get_graph_name(graph_path);
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
+static void run_bench_memory_csr(const std::string& graph_name, const CSRGraph& csr, int ba_exp) {
 
     vid_t nV = csr.nV;
     eoff_t nE = csr.nE;
@@ -354,10 +342,7 @@ static void run_bench_memory(const std::string& graph_path, int ba_exp) {
               << " coo_bpe=" << coo_bpe << "\n";
 }
 
-static void run_bench_bfs(const std::string& graph_path, vid_t source, int num_trials) {
-    std::string graph_name = get_graph_name(graph_path);
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
+static void run_bench_bfs_csr(const std::string& graph_name, const CSRGraph& csr, vid_t source, int num_trials) {
 
     // If default source=0 has degree 0, pick highest-degree vertex for meaningful traversal
     if (source == 0 && csr.nV > 0 && (csr.row_offsets[1] - csr.row_offsets[0]) == 0) {
@@ -406,10 +391,7 @@ static void run_bench_bfs(const std::string& graph_path, vid_t source, int num_t
               << ",visited=" << visited << ",traversed=" << traversed << "\n";
 }
 
-static void run_bench_spmv(const std::string& graph_path, int num_trials) {
-    std::string graph_name = get_graph_name(graph_path);
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
+static void run_bench_spmv_csr(const std::string& graph_name, const CSRGraph& csr, int num_trials) {
 
     HornetGraph hg(csr);
     auto rh = run_spmv(hg, num_trials);
@@ -421,11 +403,7 @@ static void run_bench_spmv(const std::string& graph_path, int num_trials) {
               << ",Speedup_vs_CSR=" << std::setprecision(2) << ratio << "x\n";
 }
 
-static void run_bench_ktruss(const std::string& graph_path, int max_k) {
-    std::string graph_name = get_graph_name(graph_path);
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
-    CSRGraph sym = make_undirected_simple(csr);
+static void run_bench_ktruss_sym(const std::string& graph_name, const CSRGraph& sym, int max_k) {
 
     auto steps = run_ktruss(sym, max_k);
     long long total_deleted = 0;
@@ -447,11 +425,7 @@ static void run_bench_ktruss(const std::string& graph_path, int max_k) {
               << ",peak_rate_upd_s=" << std::setprecision(0) << peak_rate << "\n";
 }
 
-static void run_bench_tc(const std::string& graph_path, int batch_size, int num_trials, uint64_t seed) {
-    std::string graph_name = get_graph_name(graph_path);
-    CSRGraph csr;
-    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
-    CSRGraph sym = make_undirected_simple(csr);
+static void run_bench_tc_sym(const std::string& graph_name, const CSRGraph& sym, int batch_size, int num_trials, uint64_t seed) {
 
     // Warmup
     run_dynamic_tc(sym, batch_size, seed + 999);
@@ -479,6 +453,127 @@ static void run_bench_tc(const std::string& graph_path, int batch_size, int num_
               << ",delta_triangles=" << last_tri << "\n";
 }
 
+static CSRGraph load_csr_or_exit(const std::string& graph_path) {
+    CSRGraph csr;
+    if (!read_mtx_to_csr(graph_path, csr)) std::exit(1);
+    return csr;
+}
+
+static void run_bench_insert(const std::string& graph_path, int batch_size, int num_warmup, int num_trials,
+                             uint64_t base_seed, bool remove_graph_dups, bool verify, bool enable_profiling, int ba_exp) {
+    run_bench_insert_csr(get_graph_name(graph_path), load_csr_or_exit(graph_path),
+                         batch_size, num_warmup, num_trials, base_seed, remove_graph_dups, verify, enable_profiling, ba_exp);
+}
+
+static void run_bench_delete(const std::string& graph_path, int batch_size, int num_warmup, int num_trials,
+                             uint64_t base_seed, bool enable_profiling, bool verify) {
+    run_bench_delete_csr(get_graph_name(graph_path), load_csr_or_exit(graph_path),
+                         batch_size, num_warmup, num_trials, base_seed, enable_profiling, verify);
+}
+
+static void run_bench_init(const std::string& graph_path, int num_trials) {
+    run_bench_init_csr(get_graph_name(graph_path), load_csr_or_exit(graph_path), num_trials);
+}
+
+static void run_bench_memory(const std::string& graph_path, int ba_exp) {
+    run_bench_memory_csr(get_graph_name(graph_path), load_csr_or_exit(graph_path), ba_exp);
+}
+
+static void run_bench_bfs(const std::string& graph_path, vid_t source, int num_trials) {
+    run_bench_bfs_csr(get_graph_name(graph_path), load_csr_or_exit(graph_path), source, num_trials);
+}
+
+static void run_bench_spmv(const std::string& graph_path, int num_trials) {
+    run_bench_spmv_csr(get_graph_name(graph_path), load_csr_or_exit(graph_path), num_trials);
+}
+
+static void run_bench_ktruss(const std::string& graph_path, int max_k) {
+    CSRGraph csr = load_csr_or_exit(graph_path);
+    run_bench_ktruss_sym(get_graph_name(graph_path), make_undirected_simple(csr), max_k);
+}
+
+static void run_bench_tc(const std::string& graph_path, int batch_size, int num_trials, uint64_t seed) {
+    CSRGraph csr = load_csr_or_exit(graph_path);
+    run_bench_tc_sym(get_graph_name(graph_path), make_undirected_simple(csr), batch_size, num_trials, seed);
+}
+
+static std::vector<std::string> split_csv(const std::string& s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start < s.size()) {
+        size_t pos = s.find(',', start);
+        if (pos == std::string::npos) {
+            if (start < s.size()) out.push_back(s.substr(start));
+            break;
+        }
+        if (pos > start) out.push_back(s.substr(start, pos - start));
+        start = pos + 1;
+    }
+    return out;
+}
+
+/** Runs all requested benchmark suites for one graph from a single .mtx load. */
+static void run_bench_suite(const std::string& graph_path, bool verify_small, const std::string& tasks_csv) {
+    std::string graph_name = get_graph_name(graph_path);
+    CSRGraph csr = load_csr_or_exit(graph_path);
+    std::vector<std::string> tasks = split_csv(tasks_csv);
+    auto wants = [&](const std::string& t) {
+        return std::find(tasks.begin(), tasks.end(), t) != tasks.end();
+    };
+    const int batch_sizes[] = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000};
+
+    if (wants("memory")) {
+        for (int exp : {16, 19, 22, 23}) {
+            run_bench_memory_csr(graph_name, csr, exp);
+            std::cout.flush();
+        }
+    }
+    if (wants("init")) {
+        run_bench_init_csr(graph_name, csr, 10);
+        std::cout.flush();
+    }
+    if (wants("insert")) {
+        bool verify_graph = verify_small && (graph_name == "dblp-2010" || graph_name == "in-2004");
+        for (int b : batch_sizes) {
+            bool v = verify_graph && (b <= 1000000);
+            run_bench_insert_csr(graph_name, csr, b, 3, 10, 42ULL, true, v, true, 23);
+            std::cout.flush();
+            if (b == 10000 || b == 1000000) {
+                run_bench_insert_csr(graph_name, csr, b, 3, 10, 42ULL, false, false, true, 23);
+                std::cout.flush();
+            }
+        }
+    }
+    if (wants("delete")) {
+        bool verify_graph = verify_small && (graph_name == "dblp-2010");
+        for (int b : batch_sizes) {
+            bool v = verify_graph && (b <= 1000000);
+            run_bench_delete_csr(graph_name, csr, b, 3, 10, 42ULL, true, v);
+            std::cout.flush();
+        }
+    }
+    if (wants("traversal")) {
+        run_bench_bfs_csr(graph_name, csr, 0, 5);
+        std::cout.flush();
+        run_bench_spmv_csr(graph_name, csr, 10);
+        std::cout.flush();
+    }
+    if (wants("tc") || wants("ktruss")) {
+        CSRGraph sym = make_undirected_simple(csr);
+        if (wants("tc")) {
+            for (int b : {10000, 100000}) {
+                run_bench_tc_sym(graph_name, sym, b, 5, 42ULL);
+                std::cout.flush();
+            }
+        }
+        if (wants("ktruss")) {
+            // Run last: ktruss may hit device OOM exit on kron_g500-logn21.
+            run_bench_ktruss_sym(graph_name, sym, 50);
+            std::cout.flush();
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         std::cerr << "Usage: baseline_benchmark <mode> <graph_path> [options...]\n"
@@ -490,7 +585,8 @@ int main(int argc, char* argv[]) {
                   << "  bench_bfs    <graph> [source=0] [trials=5]\n"
                   << "  bench_spmv   <graph> [trials=10]\n"
                   << "  bench_ktruss <graph> [max_k=50]\n"
-                  << "  bench_tc     <graph> [batch_size=100000] [trials=5] [seed=42]\n";
+                  << "  bench_tc     <graph> [batch_size=100000] [trials=5] [seed=42]\n"
+                  << "  bench_suite  <graph> [verify_small:1/0=1] [tasks_csv=memory,init,insert,delete,traversal,tc,ktruss]\n";
         return 1;
     }
 
@@ -536,6 +632,10 @@ int main(int argc, char* argv[]) {
         int trials = (argc > 4) ? std::stoi(argv[4]) : 5;
         uint64_t seed = (argc > 5) ? std::stoull(argv[5]) : 42ULL;
         run_bench_tc(graph_path, batch_size, trials, seed);
+    } else if (mode == "bench_suite") {
+        bool verify_small = (argc > 3) ? (std::stoi(argv[3]) != 0) : true;
+        std::string tasks_csv = (argc > 4) ? argv[4] : "memory,init,insert,delete,traversal,tc,ktruss";
+        run_bench_suite(graph_path, verify_small, tasks_csv);
     } else {
         std::cerr << "Unknown mode: " << mode << "\n";
         return 1;

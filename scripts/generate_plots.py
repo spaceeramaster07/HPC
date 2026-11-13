@@ -20,10 +20,12 @@ import matplotlib.pyplot as plt
 
 WORKSPACE = Path(__file__).resolve().parent.parent
 RESULTS_DIR = WORKSPACE / "results" / "baseline"
+PLOTS_DIR = RESULTS_DIR / "plots"
 RAW_CSV = RESULTS_DIR / "raw.csv"
 MEM_FILE = RESULTS_DIR / "memory_results.txt"
 OVERHEAD_FILE = RESULTS_DIR / "overhead_results.txt"
 BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
+KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
 
 # Set publication style
 plt.style.use("seaborn-v0_8-whitegrid" if "seaborn-v0_8-whitegrid" in plt.style.available else "default")
@@ -118,7 +120,7 @@ def plot_insert_update_rate():
     ax.grid(True, which="both", ls="-", alpha=0.3)
     ax.legend(frameon=True, loc="upper left")
     plt.tight_layout()
-    out_path = RESULTS_DIR / "fig5_insert_rate_vs_batch.png"
+    out_path = PLOTS_DIR / "fig5_insert_rate_vs_batch.png"
     plt.savefig(out_path)
     plt.close()
     print(f"Saved: {out_path}")
@@ -194,7 +196,7 @@ def plot_phase_breakdown():
     axes[0].set_ylabel("Execution Time Share (%)")
     fig.legend(loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=4, frameon=True)
     plt.tight_layout()
-    out_path = RESULTS_DIR / "fig_phase_breakdown_stacked.png"
+    out_path = PLOTS_DIR / "fig_phase_breakdown_stacked.png"
     plt.savefig(out_path, bbox_inches="tight")
     plt.close()
     print(f"Saved: {out_path}")
@@ -295,7 +297,7 @@ def plot_memory_utilization():
     ax3.legend(loc="upper right")
 
     plt.tight_layout()
-    out_path = RESULTS_DIR / "fig4_memory_utilization.png"
+    out_path = PLOTS_DIR / "fig4_memory_utilization.png"
     plt.savefig(out_path)
     plt.close()
     print(f"Saved: {out_path}")
@@ -345,7 +347,7 @@ def plot_initialization_time():
     ax.grid(axis="y", linestyle="--", alpha=0.5)
     ax.legend(loc="upper left")
     plt.tight_layout()
-    out_path = RESULTS_DIR / "fig_init_time.png"
+    out_path = PLOTS_DIR / "fig_init_time.png"
     plt.savefig(out_path)
     plt.close()
     print(f"Saved: {out_path}")
@@ -396,18 +398,220 @@ def plot_delete_update_rate():
     ax.grid(True, which="both", ls="-", alpha=0.3)
     ax.legend(frameon=True, loc="upper left")
     plt.tight_layout()
-    out_path = RESULTS_DIR / "fig_delete_rate_vs_batch.png"
+    out_path = PLOTS_DIR / "fig_delete_rate_vs_batch.png"
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved: {out_path}")
+
+# ==============================================================================
+# Plot 6: Host-Serial vs GPU Time & Amdahl Ceiling at B=1,000,000
+# ==============================================================================
+def plot_amdahl_host_vs_gpu():
+    print("[Plotting] Generating Host-Serial vs GPU & Amdahl Ceiling (B=1M)...")
+    if not RAW_CSV.exists():
+        return
+
+    phase_times = {}
+    with open(RAW_CSV, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["flags"] == "--graph-dedup" and int(row["batch_size"]) == 1000000:
+                g = row["graph"]
+                p = row["phase"]
+                t = float(row["time_ms"])
+                phase_times.setdefault((g, p), []).append(t)
+
+    graphs = ["dblp-2010", "in-2004", "soc-LiveJournal1", "cage15", "kron_g500-logn21"]
+    graphs = [g for g in graphs if (g, "insert_host_alloc") in phase_times]
+    if not graphs:
+        return
+
+    host_ms = []
+    gpu_ms = []
+    ceilings = []
+    for g in graphs:
+        h = np.median(phase_times.get((g, "insert_host_alloc"), [0.0])) + np.median(
+            phase_times.get((g, "insert_host_free"), [0.0])
+        )
+        gpu = (
+            np.median(phase_times.get((g, "insert_preprocess"), [0.0]))
+            + np.median(phase_times.get((g, "insert_build_realloc"), [0.0]))
+            + np.median(phase_times.get((g, "insert_h2d_copy"), [0.0]))
+            + np.median(phase_times.get((g, "insert_adj_move"), [0.0]))
+            + np.median(phase_times.get((g, "insert_append"), [0.0]))
+        )
+        tot = h + gpu
+        host_ms.append(h)
+        gpu_ms.append(gpu)
+        ceilings.append(tot / gpu if gpu > 0 else 1.0)
+
+    x = np.arange(len(graphs))
+    fig, ax = plt.subplots(figsize=(9, 5.2))
+    ax.bar(x, host_ms, width=0.55, label="Host-Serial Alloc/Free (B+Tree/BitTree)", color="#d62728")
+    ax.bar(x, gpu_ms, bottom=host_ms, width=0.55, label="GPU Kernels + PCIe H2D", color="#1f77b4")
+
+    for i, (h, gpu, c) in enumerate(zip(host_ms, gpu_ms, ceilings)):
+        tot = h + gpu
+        pct = (h / tot * 100.0) if tot > 0 else 0.0
+        ax.text(i, tot + 0.6, f"{c:.2f}x max\n({pct:.0f}% host)", ha="center", va="bottom", fontsize=9, fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(graphs)
+    ax.set_ylabel("Median Time per 1M Batch (ms)")
+    ax.set_title("Insert Bottleneck at B=1,000,000: Host-Serial vs GPU Time (Amdahl Ceiling)")
+    ax.set_ylim(0, max(h + g for h, g in zip(host_ms, gpu_ms)) * 1.22)
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    ax.legend(loc="upper left", frameon=True)
+    plt.tight_layout()
+    out_path = PLOTS_DIR / "fig_amdahl_host_vs_gpu.png"
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved: {out_path}")
+
+# ==============================================================================
+# Plot 7: BFS & SpMV Parity vs Static CSR (Fig. 7 & 8)
+# ==============================================================================
+def plot_bfs_spmv_vs_csr():
+    print("[Plotting] Generating BFS & SpMV vs Static CSR...")
+    if not BFS_FILE.exists():
+        return
+
+    bfs_data, spmv_data = {}, {}
+    with open(BFS_FILE, "r") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if not parts:
+                continue
+            kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+            if parts[0] == "BFS" and "Hornet_MTEPS" in kv:
+                bfs_data[parts[1]] = (float(kv["Hornet_MTEPS"]), float(kv["CSR_MTEPS"]))
+            elif parts[0] == "SPMV" and "Hornet_ms" in kv:
+                spmv_data[parts[1]] = (float(kv["Hornet_ms"]), float(kv["CSR_ms"]))
+
+    graphs = [g for g in ["dblp-2010", "in-2004", "soc-LiveJournal1", "cage15", "kron_g500-logn21"] if g in bfs_data]
+    if not graphs:
+        return
+
+    x = np.arange(len(graphs))
+    w = 0.35
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+
+    h_mteps = [bfs_data[g][0] for g in graphs]
+    c_mteps = [bfs_data[g][1] for g in graphs]
+    ax1.bar(x - w / 2, h_mteps, width=w, label="Hornet", color="#1f77b4")
+    ax1.bar(x + w / 2, c_mteps, width=w, label="Static CSR", color="#2ca02c")
+    for i, (hm, cm) in enumerate(zip(h_mteps, c_mteps)):
+        ratio = hm / cm if cm > 0 else 0.0
+        ax1.text(i, max(hm, cm) * 1.03, f"{ratio:.2f}x", ha="center", va="bottom", fontsize=9)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(graphs, rotation=15, ha="right")
+    ax1.set_ylabel("Throughput (MTEPS)")
+    ax1.set_title("BFS Throughput: Hornet vs Static CSR")
+    ax1.set_ylim(0, max(max(h_mteps), max(c_mteps)) * 1.18)
+    ax1.grid(axis="y", linestyle="--", alpha=0.4)
+    ax1.legend(frameon=True)
+
+    h_spmv = [spmv_data[g][0] for g in graphs]
+    c_spmv = [spmv_data[g][1] for g in graphs]
+    ax2.bar(x - w / 2, h_spmv, width=w, label="Hornet", color="#1f77b4")
+    ax2.bar(x + w / 2, c_spmv, width=w, label="Static CSR", color="#2ca02c")
+    for i, (hs, cs) in enumerate(zip(h_spmv, c_spmv)):
+        ratio = cs / hs if hs > 0 else 0.0
+        ax2.text(i, max(hs, cs) * 1.03, f"{ratio:.2f}x", ha="center", va="bottom", fontsize=9)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(graphs, rotation=15, ha="right")
+    ax2.set_ylabel("Time per Iteration (ms)")
+    ax2.set_title("SpMV Latency: Hornet vs Static CSR (Lower is Better)")
+    ax2.set_ylim(0, max(max(h_spmv), max(c_spmv)) * 1.18)
+    ax2.grid(axis="y", linestyle="--", alpha=0.4)
+    ax2.legend(frameon=True)
+
+    plt.tight_layout()
+    out_path = PLOTS_DIR / "fig_bfs_spmv_vs_csr.png"
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved: {out_path}")
+
+# ==============================================================================
+# Plot 8: Dynamic Maximal K-Truss (Fig. 9)
+# ==============================================================================
+def plot_ktruss_summary():
+    print("[Plotting] Generating Dynamic Maximal K-Truss Summary...")
+    if not KTRUSS_FILE.exists():
+        return
+
+    rows = {}
+    with open(KTRUSS_FILE, "r") as f:
+        for line in f:
+            if line.startswith("KTRUSS_SUMMARY,"):
+                parts = line.strip().split(",")
+                kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+                rows[parts[1]] = (
+                    int(kv.get("steps", 0)),
+                    float(kv.get("total_ms", 0.0)),
+                    float(kv.get("peak_rate_upd_s", 0.0)) / 1e6,
+                )
+    graphs = [g for g in ["dblp-2010", "in-2004", "soc-LiveJournal1", "cage15"] if g in rows]
+    if not graphs:
+        return
+
+    x = np.arange(len(graphs))
+    tot_ms = [rows[g][1] for g in graphs]
+    peak_m = [rows[g][2] for g in graphs]
+    steps = [rows[g][0] for g in graphs]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.8))
+    ax1.bar(x, tot_ms, width=0.5, color="#9467bd")
+    ax1.set_yscale("log")
+    for i, (t, st) in enumerate(zip(tot_ms, steps)):
+        ax1.text(i, t * 1.18, f"{t:.0f} ms\n({st} steps)", ha="center", va="bottom", fontsize=8.5)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(graphs)
+    ax1.set_ylabel("Total Time (ms, log scale)")
+    ax1.set_title("Dynamic Maximal K-Truss: Total Time")
+    ax1.set_ylim(min(tot_ms) * 0.5, max(tot_ms) * 3.0)
+    ax1.grid(axis="y", linestyle="--", alpha=0.4)
+
+    ax2.bar(x, peak_m, width=0.5, color="#ff7f0e")
+    for i, p in enumerate(peak_m):
+        ax2.text(i, p + 1.5, f"{p:.1f}M", ha="center", va="bottom", fontsize=9)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(graphs)
+    ax2.set_ylabel("Peak Batch-Delete Rate (M edges/s)")
+    ax2.set_title("Dynamic Maximal K-Truss: Peak Update Rate")
+    ax2.set_ylim(0, max(peak_m) * 1.18)
+    ax2.grid(axis="y", linestyle="--", alpha=0.4)
+
+    plt.tight_layout()
+    out_path = PLOTS_DIR / "fig_ktruss_summary.png"
     plt.savefig(out_path)
     plt.close()
     print(f"Saved: {out_path}")
 
 def main():
-    print("=== GENERATING ALL BENCHMARK PLOTS ===")
+    parser = argparse.ArgumentParser(description="Generate Hornet benchmark plots.")
+    parser.add_argument("--mode", default="baseline", help="Results subdirectory under results/")
+    args = parser.parse_args()
+
+    global RESULTS_DIR, PLOTS_DIR, RAW_CSV, MEM_FILE, OVERHEAD_FILE, BFS_FILE, KTRUSS_FILE
+    RESULTS_DIR = WORKSPACE / "results" / args.mode
+    PLOTS_DIR = RESULTS_DIR / "plots"
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    RAW_CSV = RESULTS_DIR / "raw.csv"
+    MEM_FILE = RESULTS_DIR / "memory_results.txt"
+    OVERHEAD_FILE = RESULTS_DIR / "overhead_results.txt"
+    BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
+    KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
+
+    print(f"=== GENERATING ALL BENCHMARK PLOTS (mode={args.mode}) ===")
     plot_insert_update_rate()
     plot_phase_breakdown()
     plot_memory_utilization()
     plot_initialization_time()
     plot_delete_update_rate()
+    plot_amdahl_host_vs_gpu()
+    plot_bfs_spmv_vs_csr()
+    plot_ktruss_summary()
     print("=== ALL PLOTS GENERATED SUCCESSFULLY ===")
 
 if __name__ == "__main__":

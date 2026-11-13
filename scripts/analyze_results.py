@@ -20,6 +20,7 @@ MEM_FILE = RESULTS_DIR / "memory_results.txt"
 OVERHEAD_FILE = RESULTS_DIR / "overhead_results.txt"
 BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
 KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
+TC_FILE = RESULTS_DIR / "tc_results.txt"
 
 def analyze_insert_updates():
     if not RAW_CSV.exists():
@@ -268,14 +269,16 @@ def analyze_overhead():
     return records
 
 def print_markdown_tables():
-    print("=== TASK 3: INSTRUMENTATION OVERHEAD ===")
     overhead_recs = analyze_overhead()
-    print("| Graph | Batch Size | Uninstrumented (ms) | Instrumented (ms) | Overhead Delta (ms) | Overhead (%) |")
-    print("| :--- | :---: | :---: | :---: | :---: | :---: |")
-    for r in overhead_recs:
-        print(f"| {r['graph']} | {r['batch_size']:,} | {r['uninst_ms']:.4f} | {r['inst_ms']:.4f} | {r['delta_ms']:+.4f} | {r['overhead_pct']:+.2f}% |")
+    if overhead_recs:
+        print("=== TASK 3: INSTRUMENTATION OVERHEAD ===")
+        print("| Graph | Batch Size | Uninstrumented (ms) | Instrumented (ms) | Overhead Delta (ms) | Overhead (%) |")
+        print("| :--- | :---: | :---: | :---: | :---: | :---: |")
+        for r in overhead_recs:
+            print(f"| {r['graph']} | {r['batch_size']:,} | {r['uninst_ms']:.4f} | {r['inst_ms']:.4f} | {r['delta_ms']:+.4f} | {r['overhead_pct']:+.2f}% |")
+        print()
 
-    print("\n=== TASK 5: MEMORY UTILIZATION ===")
+    print("=== TASK 5: MEMORY UTILIZATION ===")
     mem_recs = analyze_memory()
     print("| Graph | |V| | |E| | Block Util (%) | BlockArray Util (%) | Total Hornet VRAM (MB) | Hornet Bytes/Edge | CSR Bytes/Edge | COO Bytes/Edge |")
     print("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
@@ -360,6 +363,22 @@ def print_markdown_tables():
                         f"{kv.get('total_ms', 'N/A')} | {int(kv.get('peak_rate_upd_s', 0)):,} |"
                     )
 
+    if TC_FILE.exists():
+        print("\n=== DYNAMIC TRIANGLE COUNTING ===")
+        print("| Graph | Batch Size | Insert (ms) | Query (ms) | Total (ms) | Rate (updates/s) | Delta Triangles |")
+        print("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+        with open(TC_FILE, "r") as f:
+            for line in f:
+                if line.startswith("DYNAMIC_TC,"):
+                    parts = line.strip().split(",")
+                    g = parts[1]
+                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+                    print(
+                        f"| {g} | {int(kv.get('batch', 0)):,} | {kv.get('insert_ms', 'N/A')} | "
+                        f"{kv.get('query_ms', 'N/A')} | {kv.get('total_ms', 'N/A')} | "
+                        f"{int(kv.get('rate_upd_s', 0)):,} | {int(kv.get('delta_triangles', 0)):,} |"
+                    )
+
     print("\n=== TASK 7: PHASE HOTSPOT RANKINGS BY MEASURED SHARE ===")
     for h in hotspots_table:
         print(f"**{h['graph']} (Batch {h['batch_size']:,})**:")
@@ -367,6 +386,16 @@ def print_markdown_tables():
             print(f"  {rank}. `{p}`: {p_ms:.4f} ms ({p_pct:.1f}%)")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Analyze Hornet benchmark results.")
+    parser.add_argument("--mode", default="baseline", help="Results subdirectory under results/")
+    args = parser.parse_args()
+    RESULTS_DIR = WORKSPACE / "results" / args.mode
+    RAW_CSV = RESULTS_DIR / "raw.csv"
+    MEM_FILE = RESULTS_DIR / "memory_results.txt"
+    OVERHEAD_FILE = RESULTS_DIR / "overhead_results.txt"
+    BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
+    KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
+    TC_FILE = RESULTS_DIR / "tc_results.txt"
     print_markdown_tables()
 
 

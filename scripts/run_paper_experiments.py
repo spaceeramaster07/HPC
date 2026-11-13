@@ -12,6 +12,7 @@ Runs the full paper benchmark suite using src/baseline/build/baseline_benchmark:
 """
 
 import argparse
+from contextlib import ExitStack
 import os
 import subprocess
 import sys
@@ -80,161 +81,77 @@ def ensure_binaries(mode: str) -> Path:
     raise ValueError(f"Unsupported mode: {mode}")
 
 
-def append_to_raw_csv(raw_csv: Path, lines):
-    with open(raw_csv, "a") as f:
-        for line in lines:
-            line = line.strip()
-            if (
-                line
-                and not line.startswith("Graph")
-                and not line.startswith("@File")
-                and not line.startswith("COO to CSR")
-                and not line.startswith("[")
-                and not line.startswith("Double")
-            ):
-                f.write(line + "\n")
+def _is_raw_csv_row(line: str) -> bool:
+    return (
+        bool(line)
+        and line.count(",") == 7
+        and not line.startswith(("Graph", "@File", "COO to CSR", "[", "Double", "BFS,", "SPMV,", "DYNAMIC_TC,", "KTRUSS_"))
+    )
 
 
-# ==============================================================================
-# Fig. 4: Memory Utilization Analysis
-# ==============================================================================
-def run_memory_benchmarks(bin_path: Path, results_dir: Path):
-    log_event("=== RUNNING FIG. 4: MEMORY UTILIZATION BENCHMARKS ===")
-    ba_exps = [16, 19, 22, 23]
-    mem_results_file = results_dir / "memory_results.txt"
-
-    with open(mem_results_file, "w") as out_f:
-        for exp in ba_exps:
-            for name, path in DATASETS:
-                cmd = [str(bin_path), "bench_memory", str(path), str(exp)]
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if proc.returncode != 0:
-                    log_event(f"WARNING: bench_memory failed on {name} BA_EXP={exp}: {proc.stderr.strip()}")
-                    continue
-                for line in proc.stdout.splitlines():
-                    if "[MEMORY_SUMMARY" in line:
-                        out_f.write(line + "\n")
-                        log_event(f"BA_EXP={exp} {name}: {line}")
-
-
-# ==============================================================================
-# Sec. III-D: Initialization from CSR
-# ==============================================================================
-def run_initialization_benchmarks(bin_path: Path, raw_csv: Path):
-    log_event("=== RUNNING SEC. III-D: INITIALIZATION FROM CSR BENCHMARK ===")
-    for name, path in DATASETS:
-        log_event(f"Running Initialization | Graph={name} | TimedRuns=10...")
-        cmd = [str(bin_path), "bench_init", str(path), "10"]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if proc.returncode != 0:
-            log_event(f"WARNING: bench_init failed on {name}: {proc.stderr.strip()}")
-            continue
-        append_to_raw_csv(raw_csv, proc.stdout.splitlines())
+def _route_suite_line(line: str, out_files: dict):
+    line = line.strip()
+    if not line:
+        return
+    if line.startswith("[MEMORY_SUMMARY"):
+        if "memory" in out_files:
+            out_files["memory"].write(line + "\n")
+            out_files["memory"].flush()
+        log_event(line)
+    elif line.startswith(("BFS,", "SPMV,")):
+        if "traversal" in out_files:
+            out_files["traversal"].write(line + "\n")
+            out_files["traversal"].flush()
+        log_event(line)
+    elif line.startswith("DYNAMIC_TC,"):
+        if "tc" in out_files:
+            out_files["tc"].write(line + "\n")
+            out_files["tc"].flush()
+        log_event(line)
+    elif line.startswith(("KTRUSS_STEP,", "KTRUSS_SUMMARY,")):
+        if "ktruss" in out_files:
+            out_files["ktruss"].write(line + "\n")
+            out_files["ktruss"].flush()
+        if line.startswith("KTRUSS_SUMMARY,"):
+            log_event(line)
+    elif "raw_csv" in out_files and _is_raw_csv_row(line):
+        out_files["raw_csv"].write(line + "\n")
+        parts = line.split(",")
+        if parts[2] == "0" and parts[3] in ("init_total", "insert_total", "delete_total"):
+            out_files["raw_csv"].flush()
+            log_event(f"{parts[0]} | {parts[3]} | batch={parts[1]} | flags={parts[6]} | trial0={parts[4]}ms")
 
 
-# ==============================================================================
-# Fig. 5 & 6: Dynamic Insert Updates
-# ==============================================================================
-def run_dynamic_insert_benchmarks(bin_path: Path, raw_csv: Path, verify_small: bool = True):
-    log_event("=== RUNNING FIG. 5 & 6: DYNAMIC INSERT UPDATES BENCHMARK ===")
-    batch_sizes = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000]
+def run_suite_benchmarks(bin_path: Path, results_dir: Path, raw_csv: Path, suite_tasks: list, verify_small: bool):
+    """Runs all non-nsys benchmarks for each graph via a single bench_suite process load."""
+    tasks_csv = ",".join(suite_tasks)
+    verify_flag = "1" if verify_small else "0"
+    log_event(f"=== RUNNING SINGLE-LOAD SUITE ({tasks_csv}, verify_small={verify_flag}) ===")
 
-    for name, path in DATASETS:
-        log_event(f"--- Graph: {name} ---")
-        # Only run full 10-trial CPU verification on smaller graphs to keep suite fast
-        verify_flag = "1" if (verify_small and name in ("dblp-2010", "in-2004")) else "0"
-        for b in batch_sizes:
-            v_flag = verify_flag if b <= 1000000 else "0"
-            log_event(f"Running Insert | Graph={name} | Batch={b} | Dedup=ON | TimedRuns=10 | Verify={v_flag}...")
-            cmd = [str(bin_path), "bench_insert", str(path), str(b), "3", "10", "42", "1", v_flag, "1", "23"]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if proc.returncode != 0:
-                log_event(f"WARNING: bench_insert failed on {name} batch {b}: {proc.stderr.strip()}")
-                continue
-            append_to_raw_csv(raw_csv, proc.stdout.splitlines())
+    with ExitStack() as stack:
+        out_files = {}
+        if "memory" in suite_tasks:
+            out_files["memory"] = stack.enter_context(open(results_dir / "memory_results.txt", "w"))
+        if any(t in suite_tasks for t in ("init", "insert", "delete")):
+            out_files["raw_csv"] = stack.enter_context(open(raw_csv, "a"))
+        if "traversal" in suite_tasks:
+            out_files["traversal"] = stack.enter_context(open(results_dir / "bfs_spmv_results.txt", "w"))
+        if "ktruss" in suite_tasks:
+            out_files["ktruss"] = stack.enter_context(open(results_dir / "ktruss_results.txt", "w"))
+        if "tc" in suite_tasks:
+            out_files["tc"] = stack.enter_context(open(results_dir / "tc_results.txt", "w"))
 
-            # Fig 6(b) comparison: Dedup=OFF (intra-batch dedup only)
-            if b in [10000, 1000000]:
-                log_event(f"Running Insert | Graph={name} | Batch={b} | Dedup=OFF...")
-                cmd_nd = [str(bin_path), "bench_insert", str(path), str(b), "3", "10", "42", "0", "0", "1", "23"]
-                proc_nd = subprocess.run(cmd_nd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if proc_nd.returncode == 0:
-                    append_to_raw_csv(raw_csv, proc_nd.stdout.splitlines())
-                else:
-                    log_event(f"WARNING: bench_insert (dedup=0) failed on {name} batch {b}: {proc_nd.stderr.strip()}")
-
-
-# ==============================================================================
-# Dynamic Delete Updates
-# ==============================================================================
-def run_dynamic_delete_benchmarks(bin_path: Path, raw_csv: Path, verify_small: bool = True):
-    log_event("=== RUNNING DYNAMIC DELETE UPDATES BENCHMARK ===")
-    batch_sizes = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000]
-
-    for name, path in DATASETS:
-        log_event(f"--- Deletions on Graph: {name} ---")
-        verify_flag = "1" if (verify_small and name == "dblp-2010") else "0"
-        for b in batch_sizes:
-            v_flag = verify_flag if b <= 1000000 else "0"
-            log_event(f"Running Delete | Graph={name} | Batch={b} | TimedRuns=10 | Verify={v_flag}...")
-            cmd = [str(bin_path), "bench_delete", str(path), str(b), "3", "10", "42", "1", v_flag]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if proc.returncode != 0:
-                log_event(f"WARNING: bench_delete failed on {name} batch {b}: {proc.stderr.strip()}")
-                continue
-            append_to_raw_csv(raw_csv, proc.stdout.splitlines())
-
-
-# ==============================================================================
-# Fig. 7 & 8: BFS (MTEPS) & SpMV vs Static CSR
-# ==============================================================================
-def run_traversal_benchmarks(bin_path: Path, results_dir: Path):
-    log_event("=== RUNNING FIG. 7 & 8: BFS (MTEPS) AND SPMV VS STATIC CSR ===")
-    bfs_results_file = results_dir / "bfs_spmv_results.txt"
-    with open(bfs_results_file, "w") as out_f:
         for name, path in DATASETS:
-            log_event(f"Running BFS vs CSR on {name}...")
-            cmd_bfs = [str(bin_path), "bench_bfs", str(path), "0", "5"]
-            proc_bfs = subprocess.run(cmd_bfs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if proc_bfs.returncode != 0:
-                log_event(f"WARNING: bench_bfs failed on {name}: {proc_bfs.stderr.strip()}")
-            else:
-                for line in proc_bfs.stdout.splitlines():
-                    if line.startswith("BFS,"):
-                        out_f.write(line + "\n")
-                        log_event(line)
-
-            log_event(f"Running SpMV vs CSR on {name}...")
-            cmd_spmv = [str(bin_path), "bench_spmv", str(path), "10"]
-            proc_spmv = subprocess.run(cmd_spmv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if proc_spmv.returncode != 0:
-                log_event(f"WARNING: bench_spmv failed on {name}: {proc_spmv.stderr.strip()}")
-            else:
-                for line in proc_spmv.stdout.splitlines():
-                    if line.startswith("SPMV,"):
-                        out_f.write(line + "\n")
-                        log_event(line)
-
-
-# ==============================================================================
-# Fig. 9: Dynamic Maximal K-Truss
-# ==============================================================================
-def run_ktruss_benchmarks(bin_path: Path, results_dir: Path):
-    log_event("=== RUNNING FIG. 9: DYNAMIC MAXIMAL K-TRUSS ===")
-    ktruss_file = results_dir / "ktruss_results.txt"
-    with open(ktruss_file, "w") as out_f:
-        for name, path in DATASETS:
-            log_event(f"Running Dynamic Maximal K-Truss on {name} (max_k=50)...")
-            cmd = [str(bin_path), "bench_ktruss", str(path), "50"]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if proc.returncode != 0:
-                log_event(f"WARNING: bench_ktruss failed on {name}: {proc.stderr.strip()}")
-                continue
-            for line in proc.stdout.splitlines():
-                if line.startswith("KTRUSS_STEP,") or line.startswith("KTRUSS_SUMMARY,"):
-                    out_f.write(line + "\n")
-                if line.startswith("KTRUSS_SUMMARY,"):
-                    log_event(line)
+            log_event(f"--- Loading {name} once for [{tasks_csv}] ---")
+            cmd = [str(bin_path), "bench_suite", str(path), verify_flag, tasks_csv]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.stdout is not None and proc.stderr is not None
+            for line in proc.stdout:
+                _route_suite_line(line, out_files)
+            stderr_text = proc.stderr.read().strip()
+            rc = proc.wait()
+            if rc != 0:
+                log_event(f"WARNING: bench_suite exited with code {rc} on {name}: {stderr_text}")
 
 
 # ==============================================================================
@@ -284,8 +201,8 @@ def main():
     parser.add_argument(
         "--tasks",
         nargs="+",
-        default=["memory", "init", "insert", "delete", "traversal", "ktruss", "nsys"],
-        choices=["memory", "init", "insert", "delete", "traversal", "ktruss", "nsys"],
+        default=["memory", "init", "insert", "delete", "traversal", "ktruss", "tc", "nsys"],
+        choices=["memory", "init", "insert", "delete", "traversal", "ktruss", "tc", "nsys"],
         help="Subset of benchmark tasks to run",
     )
     parser.add_argument("--no-verify", action="store_true", help="Disable CPU verification during insert/delete")
@@ -302,18 +219,9 @@ def main():
         with open(raw_csv, "w") as f:
             f.write("graph,batch_size,trial,phase,time_ms,seed,flags,commit\n")
 
-    if "memory" in args.tasks:
-        run_memory_benchmarks(bin_path, results_dir)
-    if "init" in args.tasks:
-        run_initialization_benchmarks(bin_path, raw_csv)
-    if "insert" in args.tasks:
-        run_dynamic_insert_benchmarks(bin_path, raw_csv, verify_small=not args.no_verify)
-    if "delete" in args.tasks:
-        run_dynamic_delete_benchmarks(bin_path, raw_csv, verify_small=not args.no_verify)
-    if "traversal" in args.tasks:
-        run_traversal_benchmarks(bin_path, results_dir)
-    if "ktruss" in args.tasks:
-        run_ktruss_benchmarks(bin_path, results_dir)
+    suite_tasks = [t for t in args.tasks if t != "nsys"]
+    if suite_tasks:
+        run_suite_benchmarks(bin_path, results_dir, raw_csv, suite_tasks, verify_small=not args.no_verify)
     if "nsys" in args.tasks:
         run_nsys_profiling(bin_path, results_dir)
 
