@@ -1,7 +1,7 @@
 #!/home/spaceeramaster/HPCproj_backup/.venv/bin/python3
 """
-Master Experiment Runner for Hornet 2018 Paper Replication (Clean Baseline)
-Runs the full paper benchmark suite using src/baseline/build/baseline_benchmark:
+Master Experiment Runner for Hornet 2018 Paper Replication & Improved Benchmarks
+Runs the full paper benchmark suite using src/<mode>/build/<mode>_benchmark:
   - Fig. 4: Memory utilization across BA_EXP in {16, 19, 22, 23}
   - Sec. III-D: Initialization from CSR
   - Fig. 5 & 6: Dynamic batch insert (B = 1 .. 10^7, dedup ON/OFF)
@@ -61,24 +61,28 @@ def log_event(msg):
 
 
 def ensure_binaries(mode: str) -> Path:
-    if mode == "baseline":
-        build_dir = WORKSPACE / "src" / "baseline" / "build"
-        bin_path = build_dir / "baseline_benchmark"
-        if not bin_path.exists():
-            log_event(f"Building {bin_path}...")
-            subprocess.check_call(
-                [
-                    "cmake",
-                    "-S",
-                    str(WORKSPACE / "src" / "baseline"),
-                    "-B",
-                    str(build_dir),
-                    "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc",
-                ]
-            )
-            subprocess.check_call(["cmake", "--build", str(build_dir), "-j8"])
-        return bin_path
-    raise ValueError(f"Unsupported mode: {mode}")
+    if mode not in ("baseline", "improved"):
+        raise ValueError(f"Unsupported mode: {mode}")
+    src_dir = WORKSPACE / "src" / mode
+    build_dir = src_dir / "build"
+    bin_path = build_dir / f"{mode}_benchmark"
+    if not (build_dir / "CMakeCache.txt").exists() or not bin_path.exists():
+        log_event(f"Building {bin_path}...")
+        subprocess.check_call(
+            [
+                "cmake",
+                "-S",
+                str(src_dir),
+                "-B",
+                str(build_dir),
+                "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc",
+            ]
+        )
+        subprocess.check_call(["cmake", "--build", str(build_dir), "-j8"])
+    elif mode == "improved":
+        log_event(f"Updating build for {bin_path}...")
+        subprocess.check_call(["cmake", "--build", str(build_dir), "-j8"])
+    return bin_path
 
 
 def _is_raw_csv_row(line: str) -> bool:
@@ -206,7 +210,7 @@ def run_nsys_profiling(bin_path: Path, results_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="Run Hornet 2018 paper replication experiments.")
-    parser.add_argument("--mode", default="baseline", choices=["baseline"], help="Implementation mode")
+    parser.add_argument("--mode", default="baseline", choices=["baseline", "improved"], help="Implementation mode")
     parser.add_argument(
         "--tasks",
         nargs="+",

@@ -6,10 +6,12 @@ Outputs Markdown tables directly usable in report.md
 """
 
 import argparse
-import os
-import sys
+from contextlib import redirect_stdout
 import csv
+import io
+import os
 import re
+import sys
 from pathlib import Path
 import numpy as np
 
@@ -24,7 +26,7 @@ TC_FILE = RESULTS_DIR / "tc_results.txt"
 
 def analyze_insert_updates():
     if not RAW_CSV.exists():
-        return {}
+        return {}, {}
 
     data = {} # (graph, batch_size) -> list of total_ms
     phase_data = {} # (graph, batch_size, phase) -> list of ms
@@ -385,9 +387,32 @@ def print_markdown_tables():
         for rank, (p, p_ms, p_pct) in enumerate(h['ranking'], 1):
             print(f"  {rank}. `{p}`: {p_ms:.4f} ms ({p_pct:.1f}%)")
 
+def _same_fd_as_stdout(path: Path) -> bool:
+    """Checks samefile via fstat/stat without keeping an extra descriptor open."""
+    try:
+        if not path.exists():
+            return False
+        st_out = os.fstat(sys.stdout.fileno())
+        st_file = os.stat(path)
+        return st_out.st_dev == st_file.st_dev and st_out.st_ino == st_file.st_ino
+    except OSError:
+        return False
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze Hornet benchmark results.")
     parser.add_argument("--mode", default="baseline", help="Results subdirectory under results/")
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output Markdown path (default: results/<mode>/analysis_summary.md)",
+    )
+    parser.add_argument(
+        "--no-write",
+        action="store_true",
+        help="Print Markdown tables to stdout only without writing analysis_summary.md",
+    )
     args = parser.parse_args()
     RESULTS_DIR = WORKSPACE / "results" / args.mode
     RAW_CSV = RESULTS_DIR / "raw.csv"
@@ -396,6 +421,19 @@ if __name__ == "__main__":
     BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
     KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
     TC_FILE = RESULTS_DIR / "tc_results.txt"
-    print_markdown_tables()
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_markdown_tables()
+    summary_text = buf.getvalue()
+
+    if not args.no_write:
+        out_path = Path(args.output) if args.output else (RESULTS_DIR / "analysis_summary.md")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if not _same_fd_as_stdout(out_path):
+            out_path.write_text(summary_text, encoding="utf-8")
+        print(f"[Saved] {out_path}", file=sys.stderr)
+
+    sys.stdout.write(summary_text)
 
 

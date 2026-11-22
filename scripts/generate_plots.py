@@ -19,6 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 WORKSPACE = Path(__file__).resolve().parent.parent
+MODE = "baseline"
 RESULTS_DIR = WORKSPACE / "results" / "baseline"
 PLOTS_DIR = RESULTS_DIR / "plots"
 RAW_CSV = RESULTS_DIR / "raw.csv"
@@ -114,7 +115,8 @@ def plot_insert_update_rate():
     ax.set_yscale("log")
     ax.set_xlabel("Batch Size (edges per update)")
     ax.set_ylabel("Update Rate (edges / second)")
-    ax.set_title("Hornet Dynamic Insertion Update Rate vs. Batch Size\n(RTX 4060 Laptop GPU, sm_89, WSL2)")
+    mode_suffix = f" ({MODE})" if MODE != "baseline" else ""
+    ax.set_title(f"Hornet Dynamic Insertion Update Rate vs. Batch Size{mode_suffix}\n(RTX 4060 Laptop GPU, sm_89, WSL2)")
     ax.set_ylim(1e3, 2e9)
     ax.set_xlim(0.8, 2e7)
     ax.grid(True, which="both", ls="-", alpha=0.3)
@@ -341,7 +343,8 @@ def plot_initialization_time():
         ax.text(i, t_val * 1.05, f"{t_val:.1f} ms", ha="center", va="bottom", fontsize=9, fontweight="bold")
 
     ax.set_ylabel("Initialization Time (ms)")
-    ax.set_title("Hornet Initialization Time from CSR\n(Phase Breakdown & Total)")
+    mode_suffix = f" ({MODE})" if MODE != "baseline" else ""
+    ax.set_title(f"Hornet Initialization Time from CSR{mode_suffix}\n(Phase Breakdown & Total)")
     ax.set_xticks(x)
     ax.set_xticklabels(graphs)
     ax.grid(axis="y", linestyle="--", alpha=0.5)
@@ -394,7 +397,8 @@ def plot_delete_update_rate():
     ax.set_yscale("log")
     ax.set_xlabel("Batch Size (edges deleted)")
     ax.set_ylabel("Deletion Rate (edges / second)")
-    ax.set_title("Hornet Dynamic Deletion Update Rate vs. Batch Size\n(RTX 4060 Laptop GPU, sm_89, WSL2)")
+    mode_suffix = f" ({MODE})" if MODE != "baseline" else ""
+    ax.set_title(f"Hornet Dynamic Deletion Update Rate vs. Batch Size{mode_suffix}\n(RTX 4060 Laptop GPU, sm_89, WSL2)")
     ax.grid(True, which="both", ls="-", alpha=0.3)
     ax.legend(frameon=True, loc="upper left")
     plt.tight_layout()
@@ -447,7 +451,9 @@ def plot_amdahl_host_vs_gpu():
 
     x = np.arange(len(graphs))
     fig, ax = plt.subplots(figsize=(9, 5.2))
-    ax.bar(x, host_ms, width=0.55, label="Host-Serial Alloc/Free (B+Tree/BitTree)", color="#d62728")
+    host_label = "Host-Serial Alloc/Free (B+Tree/BitTree)" if MODE == "baseline" else f"Host Alloc/Free ({MODE})"
+    mode_suffix = f" [{MODE}]" if MODE != "baseline" else ""
+    ax.bar(x, host_ms, width=0.55, label=host_label, color="#d62728")
     ax.bar(x, gpu_ms, bottom=host_ms, width=0.55, label="GPU Kernels + PCIe H2D", color="#1f77b4")
 
     for i, (h, gpu, c) in enumerate(zip(host_ms, gpu_ms, ceilings)):
@@ -458,8 +464,10 @@ def plot_amdahl_host_vs_gpu():
     ax.set_xticks(x)
     ax.set_xticklabels(graphs)
     ax.set_ylabel("Median Time per 1M Batch (ms)")
-    ax.set_title("Insert Bottleneck at B=1,000,000: Host-Serial vs GPU Time (Amdahl Ceiling)")
-    ax.set_ylim(0, max(h + g for h, g in zip(host_ms, gpu_ms)) * 1.22)
+    ax.set_title(f"Insert Bottleneck at B=1,000,000: Host vs GPU Time (Amdahl Ceiling){mode_suffix}" if MODE != "baseline" else "Insert Bottleneck at B=1,000,000: Host-Serial vs GPU Time (Amdahl Ceiling)")
+    max_y = max((h + g for h, g in zip(host_ms, gpu_ms)), default=0.0)
+    if max_y > 0:
+        ax.set_ylim(0, max_y * 1.22)
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.legend(loc="upper left", frameon=True)
     plt.tight_layout()
@@ -593,7 +601,8 @@ def main():
     parser.add_argument("--mode", default="baseline", help="Results subdirectory under results/")
     args = parser.parse_args()
 
-    global RESULTS_DIR, PLOTS_DIR, RAW_CSV, MEM_FILE, OVERHEAD_FILE, BFS_FILE, KTRUSS_FILE
+    global MODE, RESULTS_DIR, PLOTS_DIR, RAW_CSV, MEM_FILE, OVERHEAD_FILE, BFS_FILE, KTRUSS_FILE
+    MODE = args.mode
     RESULTS_DIR = WORKSPACE / "results" / args.mode
     PLOTS_DIR = RESULTS_DIR / "plots"
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
