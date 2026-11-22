@@ -4,38 +4,55 @@
 
 namespace baseline {
 
-__global__ void check_cross_dups_warp_kernel(int n_edges,
-                                             const vid_t* __restrict__ batch_src,
-                                             const vid_t* __restrict__ batch_dst,
-                                             const vid_t* __restrict__ d_used,
-                                             vid_t* const* __restrict__ d_ptr,
-                                             uint8_t* __restrict__ d_keep) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int warp_id = tid >> 5;
-    int lane = tid & 31;
-    if (warp_id >= n_edges) return;
-
-    vid_t u = batch_src[warp_id];
-    vid_t v = batch_dst[warp_id];
-    vid_t deg = d_used[u];
-    const vid_t* adj = d_ptr[u];
-
-    bool found = false;
-    for (vid_t i = lane; i < deg; i += 32) {
-        if (adj[i] == v) {
-            found = true;
-            break;
-        }
-    }
-    unsigned mask = __ballot_sync(0xFFFFFFFFu, found);
-    if (lane == 0) {
-        d_keep[warp_id] = (mask == 0u) ? 1 : 0;
+__global__ void gather_insert_graph_deg_kernel(int num_unique,
+                                                 const vid_t* __restrict__ unique_srcs,
+                                                 const vid_t* __restrict__ d_used,
+                                                 eoff_t* __restrict__ graph_deg) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < num_unique) {
+        graph_deg[i] = static_cast<eoff_t>(d_used[unique_srcs[i]]);
+    } else if (i == num_unique) {
+        graph_deg[num_unique] = 0;
     }
 }
 
-__device__ __forceinline__ int dev_ceil_log2(int x) {
-    if (x <= 1) return 0;
-    return 32 - __clz(static_cast<unsigned int>(x - 1));
+// Paper Sec. III-E / Footnote 2: binarySearchLB over existing edges of touched vertices
+__global__ void check_cross_dups_lb_kernel(int num_unique,
+                                           const eoff_t* __restrict__ graph_offsets,
+                                           eoff_t total_graph_work,
+                                           const vid_t* __restrict__ unique_srcs,
+                                           const eoff_t* __restrict__ batch_offsets,
+                                           const int* __restrict__ batch_deg,
+                                           const vid_t* __restrict__ batch_dst,
+                                           vid_t* const* __restrict__ d_ptr,
+                                           uint8_t* __restrict__ d_keep) {
+    int pos = 0;
+    eoff_t local_edge = 0;
+    eoff_t gid = 0;
+    if (!binarySearchLB(num_unique, graph_offsets, total_graph_work, pos, local_edge, gid)) {
+        return;
+    }
+
+    vid_t u = unique_srcs[pos];
+    uint32_t nbr = static_cast<uint32_t>(d_ptr[u][local_edge]);
+
+    eoff_t b_start = batch_offsets[pos];
+    int b_len = batch_deg[pos];
+
+    int lo = 0;
+    int hi = b_len - 1;
+    while (lo <= hi) {
+        int mid = lo + ((hi - lo) >> 1);
+        uint32_t val = static_cast<uint32_t>(batch_dst[b_start + mid]);
+        if (val == nbr) {
+            d_keep[b_start + mid] = 0;
+            break;
+        } else if (val < nbr) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
 }
 
 __global__ void check_insert_realloc_kernel(int num_unique,
@@ -74,26 +91,30 @@ __global__ void update_zero_deg_ptrs_kernel(int num_realloc,
     }
 }
 
-__global__ void append_batch_edges_kernel(int num_unique,
-                                          const vid_t* __restrict__ unique_srcs,
-                                          const eoff_t* __restrict__ batch_offsets,
-                                          const int* __restrict__ batch_deg,
-                                          const vid_t* __restrict__ batch_dst,
-                                          vid_t* __restrict__ d_used,
-                                          vid_t* const* __restrict__ d_ptr) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= num_unique) return;
-
-    vid_t v = unique_srcs[i];
-    vid_t old_deg = d_used[v];
-    vid_t* adj = d_ptr[v];
-    eoff_t b_off = batch_offsets[i];
-    int add_deg = batch_deg[i];
-
-    for (int k = 0; k < add_deg; ++k) {
-        adj[old_deg + k] = batch_dst[b_off + k];
+__global__ void append_batch_edges_lb_kernel(int num_unique,
+                                             const eoff_t* __restrict__ batch_offsets,
+                                             eoff_t final_count,
+                                             const vid_t* __restrict__ unique_srcs,
+                                             const vid_t* __restrict__ all_old_deg,
+                                             const vid_t* __restrict__ all_new_deg,
+                                             const vid_t* __restrict__ batch_dst,
+                                             vid_t* __restrict__ d_used,
+                                             vid_t* const* __restrict__ d_ptr) {
+    int pos = 0;
+    eoff_t local_offset = 0;
+    eoff_t gid = 0;
+    if (!binarySearchLB(num_unique, batch_offsets, final_count, pos, local_offset, gid)) {
+        return;
     }
-    d_used[v] = old_deg + add_deg;
+
+    vid_t v = unique_srcs[pos];
+    vid_t old_deg = all_old_deg[pos];
+    vid_t* adj = d_ptr[v];
+    adj[old_deg + local_offset] = batch_dst[gid];
+
+    if (local_offset == 0) {
+        d_used[v] = all_new_deg[pos];
+    }
 }
 
 
@@ -105,6 +126,7 @@ inline void batch_insert(HornetGraph& graph,
     if (batch_size == 0) return;
 
     int num_unique = 0;
+    int final_count = 0;
     vid_t* d_final_dst = nullptr;
 
     // -------------------------------------------------------------------------
@@ -132,16 +154,40 @@ inline void batch_insert(HornetGraph& graph,
             uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq);
         CUDA_CHECK(cudaGetLastError());
 
+        cub::DeviceRunLengthEncode::Encode(
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs, ws.d_batch_deg, ws.d_scalar_count, uniq_count);
+        CUDA_CHECK(cudaMemcpy(&num_unique, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        if (num_unique == 0) return;
+
+        CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
+        cub::DeviceScan::ExclusiveSum(
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets, num_unique + 1);
+
         vid_t* d_final_src = ws.d_src_uniq;
         d_final_dst = ws.d_dst_uniq;
-        int final_count = uniq_count;
+        final_count = uniq_count;
 
         if (remove_graph_dups) {
-            int warps_per_blk = blk / 32;
-            int grid = (uniq_count + warps_per_blk - 1) / warps_per_blk;
-            check_cross_dups_warp_kernel<<<grid, blk>>>(
-                uniq_count, ws.d_src_uniq, ws.d_dst_uniq, graph.d_used(), graph.d_ptr(), ws.d_keep);
+            gather_insert_graph_deg_kernel<<<(num_unique + 1 + blk - 1) / blk, blk>>>(
+                num_unique, ws.d_unique_srcs, graph.d_used(), ws.d_graph_deg);
             CUDA_CHECK(cudaGetLastError());
+
+            cub::DeviceScan::ExclusiveSum(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_graph_deg, ws.d_graph_offsets, num_unique + 1);
+
+            eoff_t total_graph_work = 0;
+            CUDA_CHECK(cudaMemcpy(&total_graph_work, &ws.d_graph_offsets[num_unique],
+                                  sizeof(eoff_t), cudaMemcpyDeviceToHost));
+
+            CUDA_CHECK(cudaMemsetAsync(ws.d_keep, 1, uniq_count * sizeof(uint8_t)));
+            if (total_graph_work > 0) {
+                eoff_t grid = (total_graph_work + blk - 1) / blk;
+                check_cross_dups_lb_kernel<<<static_cast<unsigned int>(grid), blk>>>(
+                    num_unique, ws.d_graph_offsets, total_graph_work,
+                    ws.d_unique_srcs, ws.d_batch_offsets, ws.d_batch_deg, ws.d_dst_uniq,
+                    graph.d_ptr(), ws.d_keep);
+                CUDA_CHECK(cudaGetLastError());
+            }
 
             cub::DeviceSelect::Flagged(
                 ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_keep, ws.d_filt_src, ws.d_scalar_count, uniq_count);
@@ -149,18 +195,20 @@ inline void batch_insert(HornetGraph& graph,
                 ws.d_cub_temp, ws.cub_temp_bytes, ws.d_dst_uniq, ws.d_keep, ws.d_filt_dst, ws.d_scalar_count, uniq_count);
 
             CUDA_CHECK(cudaMemcpy(&final_count, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+            if (final_count == 0) return;
+
             d_final_src = ws.d_filt_src;
             d_final_dst = ws.d_filt_dst;
+
+            if (final_count < uniq_count) {
+                cub::DeviceRunLengthEncode::Encode(
+                    ws.d_cub_temp, ws.cub_temp_bytes, d_final_src, ws.d_unique_srcs, ws.d_batch_deg, ws.d_scalar_count, final_count);
+                CUDA_CHECK(cudaMemcpy(&num_unique, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
+                cub::DeviceScan::ExclusiveSum(
+                    ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets, num_unique + 1);
+            }
         }
-
-        if (final_count == 0) return;
-
-        cub::DeviceRunLengthEncode::Encode(
-            ws.d_cub_temp, ws.cub_temp_bytes, d_final_src, ws.d_unique_srcs, ws.d_batch_deg, ws.d_scalar_count, final_count);
-        CUDA_CHECK(cudaMemcpy(&num_unique, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
-
-        cub::DeviceScan::ExclusiveSum(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets, num_unique);
     }
 
     // -------------------------------------------------------------------------
@@ -274,14 +322,16 @@ inline void batch_insert(HornetGraph& graph,
     }
 
     // -------------------------------------------------------------------------
-    // Phase 7: Append New Edges
+    // Phase 7: Append New Edges (binarySearchLB, Paper Alg. 1 lines 15-16)
     // -------------------------------------------------------------------------
     {
         ScopedPhaseTimer append_timer("insert_append", true);
         int blk = 256;
-        append_batch_edges_kernel<<<(num_unique + blk - 1) / blk, blk>>>(
-            num_unique, ws.d_unique_srcs, ws.d_batch_offsets, ws.d_batch_deg, d_final_dst,
-            graph.d_used(), graph.d_ptr());
+        eoff_t grid = (static_cast<eoff_t>(final_count) + blk - 1) / blk;
+        append_batch_edges_lb_kernel<<<static_cast<unsigned int>(grid), blk>>>(
+            num_unique, ws.d_batch_offsets, static_cast<eoff_t>(final_count),
+            ws.d_unique_srcs, ws.d_all_old_deg, ws.d_all_new_deg,
+            d_final_dst, graph.d_used(), graph.d_ptr());
         CUDA_CHECK(cudaGetLastError());
     }
 }

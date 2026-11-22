@@ -114,6 +114,8 @@ def _route_suite_line(line: str, out_files: dict):
             out_files["ktruss"].flush()
         if line.startswith("KTRUSS_SUMMARY,"):
             log_event(line)
+    elif line.startswith(("[VRAM", "[VERIFY", "[KTRUSS_SKIP")):
+        log_event(line)
     elif "raw_csv" in out_files and _is_raw_csv_row(line):
         out_files["raw_csv"].write(line + "\n")
         parts = line.split(",")
@@ -142,8 +144,15 @@ def run_suite_benchmarks(bin_path: Path, results_dir: Path, raw_csv: Path, suite
             out_files["tc"] = stack.enter_context(open(results_dir / "tc_results.txt", "w"))
 
         for name, path in DATASETS:
-            log_event(f"--- Loading {name} once for [{tasks_csv}] ---")
-            cmd = [str(bin_path), "bench_suite", str(path), verify_flag, tasks_csv]
+            per_graph_tasks = [
+                t for t in suite_tasks
+                if not (name == "kron_g500-logn21" and t == "ktruss")
+            ]
+            if not per_graph_tasks:
+                continue
+            per_graph_csv = ",".join(per_graph_tasks)
+            log_event(f"--- Loading {name} once for [{per_graph_csv}] ---")
+            cmd = [str(bin_path), "bench_suite", str(path), verify_flag, per_graph_csv]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             assert proc.stdout is not None and proc.stderr is not None
             for line in proc.stdout:

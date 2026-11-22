@@ -5,7 +5,10 @@
 #include "types.cuh"
 
 #include <cub/cub.cuh>
+#include <algorithm>
 #include <chrono>
+#include <iomanip>
+#include <iostream>
 #include <vector>
 
 #ifndef HORNET_DS_NS
@@ -105,36 +108,47 @@ inline std::vector<KTrussStep> run_ktruss(const CSRGraph& sym_csr, int max_k = 1
     eoff_t init_nE = sym_csr.nE;
     if (nV == 0 || init_nE == 0) return steps;
 
+    constexpr eoff_t MAX_KTRUSS_BATCH = 8000000;
+
     HornetGraph hg(sym_csr);
     BatchWorkspace ws;
-    ws.ensure_capacity(init_nE);
+    ws.ensure_capacity(std::min(init_nE, MAX_KTRUSS_BATCH));
 
     eoff_t* d_offsets = nullptr;
     vid_t* d_all_u = nullptr;
     vid_t* d_all_v = nullptr;
+    vid_t* d_pruned_u = nullptr;
+    vid_t* d_pruned_v = nullptr;
     uint8_t* d_prune = nullptr;
     int* d_num_pruned = nullptr;
 
     CUDA_CHECK(cudaMalloc(&d_offsets, (nV + 1) * sizeof(eoff_t)));
     CUDA_CHECK(cudaMalloc(&d_all_u, init_nE * sizeof(vid_t)));
     CUDA_CHECK(cudaMalloc(&d_all_v, init_nE * sizeof(vid_t)));
+    CUDA_CHECK(cudaMalloc(&d_pruned_u, init_nE * sizeof(vid_t)));
+    CUDA_CHECK(cudaMalloc(&d_pruned_v, init_nE * sizeof(vid_t)));
     CUDA_CHECK(cudaMalloc(&d_prune, init_nE * sizeof(uint8_t)));
     CUDA_CHECK(cudaMalloc(&d_num_pruned, sizeof(int)));
 
     void* d_scan_temp = nullptr;
     size_t scan_temp_bytes = 0;
     cub::DeviceScan::ExclusiveSum(d_scan_temp, scan_temp_bytes, hg.d_used(), d_offsets, nV + 1);
-    CUDA_CHECK(cudaMalloc(&d_scan_temp, scan_temp_bytes));
+    size_t select_temp_bytes = 0;
+    cub::DeviceSelect::Flagged(nullptr, select_temp_bytes, d_all_u, d_prune, d_pruned_u, d_num_pruned, init_nE);
+    size_t temp_bytes = std::max(scan_temp_bytes, select_temp_bytes);
+    CUDA_CHECK(cudaMalloc(&d_scan_temp, temp_bytes));
 
     int k = 3;
     int blk = 256;
+    bool logged_vram = false;
 
     while (k <= max_k) {
         CUDA_CHECK(cudaDeviceSynchronize());
         auto t0 = std::chrono::high_resolution_clock::now();
 
         // 1. Compute active edge offsets
-        cub::DeviceScan::ExclusiveSum(d_scan_temp, scan_temp_bytes, hg.d_used(), d_offsets, nV + 1);
+        size_t cur_scan_bytes = temp_bytes;
+        cub::DeviceScan::ExclusiveSum(d_scan_temp, cur_scan_bytes, hg.d_used(), d_offsets, nV + 1);
         eoff_t total_edges = 0;
         CUDA_CHECK(cudaMemcpy(&total_edges, &d_offsets[nV], sizeof(eoff_t), cudaMemcpyDeviceToHost));
         if (total_edges == 0) break;
@@ -146,11 +160,13 @@ inline std::vector<KTrussStep> run_ktruss(const CSRGraph& sym_csr, int max_k = 1
             d_all_u, d_all_v, d_prune);
         CUDA_CHECK(cudaGetLastError());
 
-        // 3. Compact flagged edges directly into ws.d_raw_src / ws.d_raw_dst
+        // 3. Compact flagged edges into d_pruned_u / d_pruned_v (sized for up to init_nE)
+        size_t cur_sel_u_bytes = temp_bytes;
         cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, d_all_u, d_prune, ws.d_raw_src, d_num_pruned, total_edges);
+            d_scan_temp, cur_sel_u_bytes, d_all_u, d_prune, d_pruned_u, d_num_pruned, total_edges);
+        size_t cur_sel_v_bytes = temp_bytes;
         cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, d_all_v, d_prune, ws.d_raw_dst, d_num_pruned, total_edges);
+            d_scan_temp, cur_sel_v_bytes, d_all_v, d_prune, d_pruned_v, d_num_pruned, total_edges);
 
         int num_pruned = 0;
         CUDA_CHECK(cudaMemcpy(&num_pruned, d_num_pruned, sizeof(int), cudaMemcpyDeviceToHost));
@@ -160,9 +176,26 @@ inline std::vector<KTrussStep> run_ktruss(const CSRGraph& sym_csr, int max_k = 1
             continue;
         }
 
-        // 4. Batch delete pruned edges from Hornet
-        ws.batch_size = num_pruned;
-        batch_delete(hg, ws);
+        // 4. Batch delete pruned edges from Hornet in chunks <= MAX_KTRUSS_BATCH
+        for (eoff_t off = 0; off < num_pruned; off += MAX_KTRUSS_BATCH) {
+            int chunk = static_cast<int>(std::min<eoff_t>(MAX_KTRUSS_BATCH, num_pruned - off));
+            CUDA_CHECK(cudaMemcpy(ws.d_raw_src, d_pruned_u + off, chunk * sizeof(vid_t), cudaMemcpyDeviceToDevice));
+            CUDA_CHECK(cudaMemcpy(ws.d_raw_dst, d_pruned_v + off, chunk * sizeof(vid_t), cudaMemcpyDeviceToDevice));
+            ws.batch_size = chunk;
+            batch_delete(hg, ws);
+        }
+
+        if (!logged_vram) {
+            size_t free_b = 0, total_b = 0;
+            CUDA_CHECK(cudaMemGetInfo(&free_b, &total_b));
+            double used_mb = static_cast<double>(total_b - free_b) / (1024.0 * 1024.0);
+            double free_mb = static_cast<double>(free_b) / (1024.0 * 1024.0);
+            std::cout << "[VRAM ktruss] init_nE=" << init_nE
+                      << " used_mb=" << std::fixed << std::setprecision(1) << used_mb
+                      << " free_mb=" << free_mb
+                      << " total_mb=" << (static_cast<double>(total_b) / (1024.0 * 1024.0)) << "\n";
+            logged_vram = true;
+        }
 
         CUDA_CHECK(cudaDeviceSynchronize());
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -176,6 +209,8 @@ inline std::vector<KTrussStep> run_ktruss(const CSRGraph& sym_csr, int max_k = 1
     cudaFree(d_offsets);
     cudaFree(d_all_u);
     cudaFree(d_all_v);
+    cudaFree(d_pruned_u);
+    cudaFree(d_pruned_v);
     cudaFree(d_prune);
     cudaFree(d_num_pruned);
 

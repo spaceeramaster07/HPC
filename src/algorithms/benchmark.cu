@@ -112,6 +112,14 @@ static bool verify_delete_correctness(const HornetGraph& graph,
         return false;
     }
 
+    for (size_t i = 1; i < got_src.size(); ++i) {
+        if (got_src[i] == got_src[i - 1] && got_dst[i] < got_dst[i - 1]) {
+            std::cerr << "[VERIFY DELETE ERROR] Adjacency list for vertex " << got_src[i]
+                      << " became unsorted at edge " << i << "\n";
+            return false;
+        }
+    }
+
     std::vector<std::pair<vid_t, vid_t>> actual(got_src.size());
     for (size_t i = 0; i < got_src.size(); ++i) {
         actual[i] = {got_src[i], got_dst[i]};
@@ -125,6 +133,89 @@ static bool verify_delete_correctness(const HornetGraph& graph,
         }
     }
     return true;
+}
+
+static void log_vram_usage(const std::string& tag) {
+    size_t free_b = 0, total_b = 0;
+    CUDA_CHECK(cudaMemGetInfo(&free_b, &total_b));
+    double used_mb = static_cast<double>(total_b - free_b) / (1024.0 * 1024.0);
+    double free_mb = static_cast<double>(free_b) / (1024.0 * 1024.0);
+    double total_mb = static_cast<double>(total_b) / (1024.0 * 1024.0);
+    std::cout << "[VRAM " << tag << "] used_mb=" << std::fixed << std::setprecision(1) << used_mb
+              << " free_mb=" << free_mb << " total_mb=" << total_mb << "\n";
+}
+
+static void extract_coo_from_csr(const CSRGraph& csr,
+                                 std::vector<vid_t>& out_src,
+                                 std::vector<vid_t>& out_dst) {
+    out_src.resize(csr.nE);
+    out_dst.resize(csr.nE);
+    eoff_t idx = 0;
+    for (vid_t v = 0; v < csr.nV; ++v) {
+        for (eoff_t e = csr.row_offsets[v]; e < csr.row_offsets[v + 1]; ++e) {
+            out_src[idx] = v;
+            out_dst[idx] = csr.col_indices[e];
+            ++idx;
+        }
+    }
+}
+
+static void verify_insert_once_csr(const std::string& graph_name,
+                                   const CSRGraph& csr,
+                                   int batch_size,
+                                   uint64_t seed,
+                                   bool remove_graph_dups,
+                                   int ba_exp) {
+    bool prev_prof = HornetProfiler::instance().is_enabled();
+    HornetProfiler::instance().set_enabled(false);
+
+    HornetGraph hg(csr, 1ULL << ba_exp);
+    BatchWorkspace ws;
+    ws.ensure_capacity(batch_size);
+
+    std::vector<vid_t> init_src, init_dst, b_src, b_dst;
+    hg.get_coo(init_src, init_dst);
+    generate_random_batch(csr.nV, batch_size, seed, b_src, b_dst);
+    ws.prepare(b_src, b_dst);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    batch_insert(hg, ws, remove_graph_dups);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    if (!verify_insert_correctness(hg, init_src, init_dst, b_src, b_dst, remove_graph_dups)) {
+        std::cerr << "[FATAL] Insert verification failed on " << graph_name
+                  << " batch=" << batch_size << "!\n";
+        std::exit(1);
+    }
+    std::cout << "[VERIFY PASS] insert graph=" << graph_name << " batch=" << batch_size << "\n";
+    HornetProfiler::instance().set_enabled(prev_prof);
+}
+
+static void verify_delete_once_csr(const std::string& graph_name,
+                                   const CSRGraph& csr,
+                                   int batch_size,
+                                   uint64_t seed) {
+    bool prev_prof = HornetProfiler::instance().is_enabled();
+    HornetProfiler::instance().set_enabled(false);
+
+    HornetGraph hg(csr);
+    BatchWorkspace ws;
+    ws.ensure_capacity(batch_size);
+
+    std::vector<vid_t> init_src, init_dst, b_src, b_dst;
+    hg.get_coo(init_src, init_dst);
+    select_random_edges(init_src, init_dst, batch_size, seed, b_src, b_dst);
+    ws.prepare(b_src, b_dst);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    batch_delete(hg, ws);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    if (!verify_delete_correctness(hg, init_src, init_dst, b_src, b_dst)) {
+        std::cerr << "[FATAL] Delete verification failed on " << graph_name
+                  << " batch=" << batch_size << "!\n";
+        std::exit(1);
+    }
+    std::cout << "[VERIFY PASS] delete graph=" << graph_name << " batch=" << batch_size << "\n";
+    HornetProfiler::instance().set_enabled(prev_prof);
 }
 
 static void run_bench_insert_csr(const std::string& graph_name,
@@ -152,6 +243,9 @@ static void run_bench_insert_csr(const std::string& graph_name,
         CUDA_CHECK(cudaDeviceSynchronize());
         batch_insert(hg, ws, remove_graph_dups);
         CUDA_CHECK(cudaDeviceSynchronize());
+        if (w == num_warmup - 1 && batch_size >= 1000000) {
+            log_vram_usage("insert graph=" + graph_name + " batch=" + std::to_string(batch_size));
+        }
     }
 
     for (int t = 0; t < num_trials; ++t) {
@@ -216,24 +310,32 @@ static void run_bench_delete_csr(const std::string& graph_name,
     BatchWorkspace ws;
     ws.ensure_capacity(batch_size);
 
+    std::vector<vid_t> init_src, init_dst;
+    extract_coo_from_csr(csr, init_src, init_dst);
+
     for (int w = 0; w < num_warmup; ++w) {
         HornetGraph hg(csr);
-        std::vector<vid_t> init_src, init_dst, b_src, b_dst;
-        hg.get_coo(init_src, init_dst);
+        std::vector<vid_t> b_src, b_dst;
         select_random_edges(init_src, init_dst, batch_size, base_seed + 1000 + w, b_src, b_dst);
         ws.prepare(b_src, b_dst);
         CUDA_CHECK(cudaDeviceSynchronize());
         batch_delete(hg, ws);
         CUDA_CHECK(cudaDeviceSynchronize());
+        if (w == num_warmup - 1 && batch_size >= 1000000) {
+            log_vram_usage("delete graph=" + graph_name + " batch=" + std::to_string(batch_size));
+        }
     }
 
     for (int t = 0; t < num_trials; ++t) {
         HornetGraph hg(csr);
         uint64_t trial_seed = base_seed + t;
-        std::vector<vid_t> init_src, init_dst, b_src, b_dst;
-        hg.get_coo(init_src, init_dst);
+        std::vector<vid_t> b_src, b_dst;
         select_random_edges(init_src, init_dst, batch_size, trial_seed, b_src, b_dst);
         ws.prepare(b_src, b_dst);
+
+        if (enable_profiling) {
+            HornetProfiler::instance().clear();
+        }
 
         CUDA_CHECK(cudaDeviceSynchronize());
         auto start = std::chrono::high_resolution_clock::now();
@@ -247,6 +349,16 @@ static void run_bench_delete_csr(const std::string& graph_name,
         std::cout << graph_name << "," << batch_size << "," << t << ",delete_total,"
                   << std::fixed << std::setprecision(4) << trial_total_ms << ","
                   << trial_seed << "," << flags << ",baseline_btree\n";
+
+        if (enable_profiling) {
+            for (const auto& kv : HornetProfiler::instance().get_all_phases()) {
+                if (kv.first != "delete_total") {
+                    std::cout << graph_name << "," << batch_size << "," << t << "," << kv.first << ","
+                              << std::fixed << std::setprecision(4) << kv.second << ","
+                              << trial_seed << "," << flags << ",baseline_btree\n";
+                }
+            }
+        }
 
         if (verify) {
             if (!verify_delete_correctness(hg, init_src, init_dst, b_src, b_dst)) {
@@ -295,7 +407,9 @@ static void run_bench_memory_csr(const std::string& graph_name, const CSRGraph& 
     for (vid_t i = 0; i < nV; ++i) {
         int d = csr.row_offsets[i + 1] - csr.row_offsets[i];
         sum_deg += d;
-        sum_pow2 += (d <= 1) ? 1 : (1 << ceil_log2(d));
+        if (d > 0) {
+            sum_pow2 += (d == 1) ? 1 : (1 << ceil_log2(d));
+        }
     }
     double block_util = (sum_pow2 > 0) ? (static_cast<double>(sum_deg) / sum_pow2) : 0.0;
 
@@ -522,6 +636,9 @@ static void run_bench_suite(const std::string& graph_path, bool verify_small, co
     };
     const int batch_sizes[] = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000};
 
+    log_vram_usage("suite_start graph=" + graph_name);
+    std::cout.flush();
+
     if (wants("memory")) {
         for (int exp : {16, 19, 22, 23}) {
             run_bench_memory_csr(graph_name, csr, exp);
@@ -534,9 +651,16 @@ static void run_bench_suite(const std::string& graph_path, bool verify_small, co
     }
     if (wants("insert")) {
         bool verify_graph = verify_small && (graph_name == "dblp-2010" || graph_name == "in-2004");
+        if (verify_graph) {
+            for (int b : batch_sizes) {
+                if (b <= 1000000) {
+                    verify_insert_once_csr(graph_name, csr, b, 42ULL, true, 23);
+                    std::cout.flush();
+                }
+            }
+        }
         for (int b : batch_sizes) {
-            bool v = verify_graph && (b <= 1000000);
-            run_bench_insert_csr(graph_name, csr, b, 3, 10, 42ULL, true, v, true, 23);
+            run_bench_insert_csr(graph_name, csr, b, 3, 10, 42ULL, true, false, true, 23);
             std::cout.flush();
             if (b == 10000 || b == 1000000) {
                 run_bench_insert_csr(graph_name, csr, b, 3, 10, 42ULL, false, false, true, 23);
@@ -546,9 +670,16 @@ static void run_bench_suite(const std::string& graph_path, bool verify_small, co
     }
     if (wants("delete")) {
         bool verify_graph = verify_small && (graph_name == "dblp-2010");
+        if (verify_graph) {
+            for (int b : batch_sizes) {
+                if (b <= 1000000) {
+                    verify_delete_once_csr(graph_name, csr, b, 42ULL);
+                    std::cout.flush();
+                }
+            }
+        }
         for (int b : batch_sizes) {
-            bool v = verify_graph && (b <= 1000000);
-            run_bench_delete_csr(graph_name, csr, b, 3, 10, 42ULL, true, v);
+            run_bench_delete_csr(graph_name, csr, b, 3, 10, 42ULL, true, false);
             std::cout.flush();
         }
     }
@@ -567,11 +698,18 @@ static void run_bench_suite(const std::string& graph_path, bool verify_small, co
             }
         }
         if (wants("ktruss")) {
-            // Run last: ktruss may hit device OOM exit on kron_g500-logn21.
-            run_bench_ktruss_sym(graph_name, sym, 50);
+            if (graph_name == "kron_g500-logn21") {
+                std::cout << "[KTRUSS_SKIP] Skipping baseline ktruss on " << graph_name
+                          << " (unoptimized static recount risks TDR/long runtime)\n";
+            } else {
+                run_bench_ktruss_sym(graph_name, sym, 50);
+            }
             std::cout.flush();
         }
     }
+
+    log_vram_usage("suite_end graph=" + graph_name);
+    std::cout.flush();
 }
 
 int main(int argc, char* argv[]) {

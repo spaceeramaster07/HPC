@@ -5,6 +5,8 @@
 #include "types.cuh"
 
 #include <cstdint>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -49,6 +51,7 @@ public:
     void clear() {
         for (int b = 0; b < MAX_BINS; ++b) {
             btrees_[b].clear();
+            ptr_maps_[b].clear();
             all_bas_[b].clear();
         }
     }
@@ -63,6 +66,7 @@ public:
                 new_ba->enable_host_staging();
             }
             ba = new_ba.get();
+            ptr_maps_[log_bsize].emplace(reinterpret_cast<uintptr_t>(ba->device_base()), ba);
             all_bas_[log_bsize].push_back(std::move(new_ba));
             btrees_[log_bsize].insert({ba->free_count(), reinterpret_cast<uintptr_t>(ba)}, ba);
         }
@@ -79,15 +83,13 @@ public:
     }
 
     void reclaim_block(const vid_t* ptr, int old_log_bsize) {
-        if (!ptr) return;
-        BlockArray* target = nullptr;
-        for (const auto& ba_uptr : all_bas_[old_log_bsize]) {
-            if (ba_uptr->owns_ptr(ptr)) {
-                target = ba_uptr.get();
-                break;
-            }
-        }
-        if (!target) return;
+        if (!ptr || old_log_bsize < 0 || old_log_bsize >= MAX_BINS) return;
+        const auto& pmap = ptr_maps_[old_log_bsize];
+        auto it = pmap.upper_bound(reinterpret_cast<uintptr_t>(ptr));
+        if (it == pmap.begin()) return;
+        it = std::prev(it);
+        BlockArray* target = it->second;
+        if (!target->owns_ptr(ptr)) return;
 
         int old_free = target->free_count();
         target->free_block_by_ptr(ptr);
@@ -129,6 +131,7 @@ public:
 private:
     size_t max_edges_per_ba_;
     BPlusTree<BTreeKey, BlockArray*> btrees_[MAX_BINS];
+    std::map<uintptr_t, BlockArray*> ptr_maps_[MAX_BINS];
     std::vector<std::unique_ptr<BlockArray>> all_bas_[MAX_BINS];
 };
 
