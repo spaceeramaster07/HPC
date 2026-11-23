@@ -11,6 +11,7 @@ if(NOT CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenMP REQUIRED)
 
 add_executable(improved_benchmark ../algorithms/benchmark.cu)
 
@@ -26,10 +27,12 @@ target_compile_definitions(improved_benchmark PRIVATE
 target_compile_options(improved_benchmark PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wextra>
     $<$<COMPILE_LANGUAGE:CUDA>:-O3 --expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fopenmp>
 )
 
 target_link_libraries(improved_benchmark PRIVATE
     CUDA::cudart
     CUDA::nvtx3
+    OpenMP::OpenMP_CXX
     ${CMAKE_DL_LIBS}
 )

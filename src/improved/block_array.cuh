@@ -87,11 +87,15 @@ public:
     int free_count() const { return bit_tree_.free_count(); }
     int num_blocks() const { return num_blocks_; }
     int used_blocks() const { return bit_tree_.used_count(); }
+    void mark_prefix_used(int used_blocks) { bit_tree_.mark_prefix_used(used_blocks); }
     int log_bsize() const { return log_bsize_; }
     size_t block_size() const { return block_size_; }
     size_t total_edges() const { return total_edges_; }
     size_t total_bytes() const { return total_edges_ * sizeof(vid_t); }
     vid_t* device_base() const { return d_edges_; }
+    vid_t* ptr_of_block(int block_idx) const {
+        return d_edges_ + static_cast<size_t>(block_idx) * block_size_;
+    }
 
     bool owns_ptr(const vid_t* ptr) const {
         return ptr >= d_edges_ && ptr < (d_edges_ + total_edges_);

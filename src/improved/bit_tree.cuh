@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -60,6 +61,29 @@ public:
     int free_count() const { return free_count_; }
     int num_blocks() const { return num_blocks_; }
     int used_count() const { return num_blocks_ - free_count_; }
+
+    void mark_prefix_used(int used_blocks) {
+        const int clamped = used_blocks < 0 ? 0 : (used_blocks > num_blocks_ ? num_blocks_ : used_blocks);
+        const int leaf_words = static_cast<int>(levels_.back().size());
+        for (int word = 0; word < leaf_words; ++word) {
+            const int first_block = word * 64;
+            const int used_in_word = std::max(0, std::min(64, clamped - first_block));
+            uint64_t free_mask = used_in_word >= 64 ? 0ULL : (~0ULL << used_in_word);
+            const int valid_bits = std::min(64, num_blocks_ - first_block);
+            if (valid_bits < 64) free_mask &= (1ULL << valid_bits) - 1ULL;
+            levels_.back()[word] = free_mask;
+        }
+        free_count_ = num_blocks_ - clamped;
+
+        for (int level = static_cast<int>(levels_.size()) - 2; level >= 0; --level) {
+            std::fill(levels_[level].begin(), levels_[level].end(), 0ULL);
+            for (size_t i = 0; i < levels_[level + 1].size(); ++i) {
+                if (levels_[level + 1][i] != 0ULL) {
+                    levels_[level][i >> 6] |= (1ULL << (i & 63));
+                }
+            }
+        }
+    }
 
     int allocate_block() {
         if (!has_free()) return -1;
