@@ -4,8 +4,11 @@
 #include "memory_manager.cuh"
 #include "types.cuh"
 
+#include <array>
+#include <cstdint>
 #include <numeric>
 #include <vector>
+#include <omp.h>
 
 namespace improved {
 
@@ -112,18 +115,71 @@ private:
 
         {
             ScopedPhaseTimer vloop_timer("init_vertex_loop", false);
+            const int max_threads = omp_get_max_threads();
+            std::vector<std::array<int, MemoryManager::MAX_BINS>> thread_counts(max_threads);
+            std::vector<std::array<int, MemoryManager::MAX_BINS>> thread_offsets(max_threads);
+            std::vector<int> v_slot(nV_, -1);
+            std::array<int, MemoryManager::MAX_BINS> bin_total{};
+
+#pragma omp parallel shared(thread_counts, thread_offsets, bin_total, v_slot, h_used)
+            {
+                const int tid = omp_get_thread_num();
+                const int nthreads = omp_get_num_threads();
+                const vid_t start = static_cast<vid_t>((static_cast<int64_t>(nV_) * tid) / nthreads);
+                const vid_t end = static_cast<vid_t>((static_cast<int64_t>(nV_) * (tid + 1)) / nthreads);
+                thread_counts[tid].fill(0);
+                for (vid_t v = start; v < end; ++v) {
+                    const int deg = csr.row_offsets[v + 1] - csr.row_offsets[v];
+                    h_used[v] = deg;
+                    if (deg > 0) ++thread_counts[tid][ceil_log2(deg)];
+                }
+
+#pragma omp barrier
+#pragma omp single
+                {
+                    bin_total.fill(0);
+                    for (int b = 0; b < MemoryManager::MAX_BINS; ++b) {
+                        int offset = 0;
+                        for (int t = 0; t < nthreads; ++t) {
+                            thread_offsets[t][b] = offset;
+                            offset += thread_counts[t][b];
+                        }
+                        bin_total[b] = offset;
+                    }
+                }
+
+#pragma omp barrier
+                for (vid_t v = start; v < end; ++v) {
+                    const int deg = h_used[v];
+                    if (deg > 0) {
+                        const int bin = ceil_log2(deg);
+                        v_slot[v] = thread_offsets[tid][bin]++;
+                    }
+                }
+            }
+
+            std::array<std::vector<BlockArray*>, MemoryManager::MAX_BINS> bin_bas;
+            std::array<int, MemoryManager::MAX_BINS> blocks_per_ba{};
+            for (int b = 0; b < MemoryManager::MAX_BINS; ++b) {
+                if (bin_total[b] > 0) {
+                    bin_bas[b] = mem_mgr_.preallocate_bin_for_init(b, bin_total[b], blocks_per_ba[b]);
+                }
+            }
+
+#pragma omp parallel for schedule(dynamic, 4096)
             for (vid_t v = 0; v < nV_; ++v) {
-                int deg = csr.row_offsets[v + 1] - csr.row_offsets[v];
-                h_used[v] = deg;
-                if (deg == 0) {
+                const int deg = h_used[v];
+                if (deg <= 0) {
                     h_ptr[v] = nullptr;
                     continue;
                 }
-                int log_b = ceil_log2(deg);
-                auto res = mem_mgr_.allocate_block(log_b, true);
-                h_ptr[v] = res.ptr;
-                res.ba->stage_block_data(
-                    res.block_idx, csr.col_indices.data() + csr.row_offsets[v], deg);
+                const int log_b = ceil_log2(deg);
+                const int slot = v_slot[v];
+                const int ba_idx = slot / blocks_per_ba[log_b];
+                const int block_idx = slot % blocks_per_ba[log_b];
+                BlockArray* ba = bin_bas[log_b][ba_idx];
+                h_ptr[v] = ba->ptr_of_block(block_idx);
+                ba->stage_block_data(block_idx, csr.col_indices.data() + csr.row_offsets[v], deg);
             }
         }
 

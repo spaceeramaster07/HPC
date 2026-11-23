@@ -8,6 +8,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <algorithm>
 #include <vector>
 
 namespace improved {
@@ -104,6 +105,32 @@ public:
                 ba->flush_staging_to_device();
             }
         }
+    }
+
+    std::vector<BlockArray*> preallocate_bin_for_init(int log_bsize, int num_needed_blocks,
+                                                       int& blocks_per_ba) {
+        std::vector<BlockArray*> result;
+        if (num_needed_blocks <= 0) {
+            blocks_per_ba = 0;
+            return result;
+        }
+
+        blocks_per_ba = static_cast<int>(std::max<size_t>(
+            1, max_edges_per_ba_ / (1ULL << log_bsize)));
+        int remaining = num_needed_blocks;
+        while (remaining > 0) {
+            auto new_ba = std::make_unique<BlockArray>(log_bsize, max_edges_per_ba_);
+            new_ba->enable_host_staging();
+            const int take = std::min(remaining, blocks_per_ba);
+            new_ba->mark_prefix_used(take);
+            BlockArray* ba = new_ba.get();
+            ptr_maps_[log_bsize].emplace(reinterpret_cast<uintptr_t>(ba->device_base()), ba);
+            all_bas_[log_bsize].push_back(std::move(new_ba));
+            btrees_[log_bsize].insert({ba->free_count(), reinterpret_cast<uintptr_t>(ba)}, ba);
+            result.push_back(ba);
+            remaining -= take;
+        }
+        return result;
     }
 
     size_t get_ba_allocated_edges() const {
