@@ -134,6 +134,7 @@ private:
                     if (deg > 0) ++thread_counts[tid][ceil_log2(deg)];
                 }
 
+#pragma omp barrier
 #pragma omp single
                 {
                     bin_total.fill(0);
