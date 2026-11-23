@@ -120,8 +120,8 @@ public:
         int remaining = num_needed_blocks;
         while (remaining > 0) {
             auto new_ba = std::make_unique<BlockArray>(log_bsize, max_edges_per_ba_);
-            new_ba->enable_host_staging();
             const int take = std::min(remaining, blocks_per_ba);
+            new_ba->enable_host_staging(take);
             new_ba->mark_prefix_used(take);
             BlockArray* ba = new_ba.get();
             ptr_maps_[log_bsize].emplace(reinterpret_cast<uintptr_t>(ba->device_base()), ba);

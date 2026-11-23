@@ -1,0 +1,213 @@
+[VRAM insert graph=dblp-2010 batch=1000000] used_mb=1547.5 free_mb=6640.0 total_mb=8187.5
+dblp-2010,1000000,0,insert_total,19.6881,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_host_free,9.0221,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_h2d_copy,0.2756,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_append,0.2912,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_host_alloc,8.1367,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_adj_move,0.2470,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_build_realloc,0.6211,42,--graph-dedup,baseline_btree
+dblp-2010,1000000,0,insert_preprocess,0.9947,42,--graph-dedup,baseline_btree
+Collecting data...
+Generating '/tmp/nsys-report-18a7.qdstrm'
+
+[1/7] [0%                          ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [0%                          ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [9%                          ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [===========50%              ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [===========51%              ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [============54%             ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [============57%             ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [==============61%           ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [======================92%   ] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [========================100%] nsys_dblp-2010_large_1m.nsys-rep
+[1/7] [========================100%] nsys_dblp-2010_large_1m.nsys-rep
+
+[2/7] [0%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [1%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [2%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [3%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [4%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [5%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [6%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [7%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [8%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [9%                          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [10%                         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [11%                         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [12%                         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [13%                         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [14%                         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=15%                        ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=16%                        ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=17%                        ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==18%                       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==19%                       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==20%                       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==21%                       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===22%                      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===23%                      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===24%                      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====25%                     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====26%                     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====27%                     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====28%                     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====29%                    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====30%                    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====31%                    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====32%                    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [======33%                   ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [======34%                   ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [======35%                   ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======36%                  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======37%                  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======38%                  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======39%                  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========40%                 ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========41%                 ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========42%                 ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=========43%                ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=========44%                ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=========45%                ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=========46%                ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==========47%               ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==========48%               ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==========49%               ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===========50%              ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===========51%              ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===========52%              ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===========53%              ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [============54%             ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [============55%             ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [============56%             ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [============57%             ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=============58%            ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=============59%            ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=============60%            ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==============61%           ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==============62%           ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==============63%           ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==============64%           ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===============65%          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===============66%          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===============67%          ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [================68%         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [================69%         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [================70%         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [================71%         ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=================72%        ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=================73%        ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=================74%        ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==================75%       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==================76%       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==================77%       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [==================78%       ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===================79%      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===================80%      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===================81%      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [===================82%      ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====================83%     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====================84%     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [====================85%     ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====================86%    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====================87%    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====================88%    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=====================89%    ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [======================90%   ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [======================91%   ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [======================92%   ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======================93%  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======================94%  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======================95%  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [=======================96%  ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========================97% ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========================98% ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========================99% ] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========================100%] nsys_dblp-2010_large_1m.sqlite
+[2/7] [========================100%] nsys_dblp-2010_large_1m.sqlite
+[3/7] Executing 'nvtx_sum' stats report
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)   Style                    Range                 
+ --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  -------  ---------------------------------------
+     30.1         60847049          2  30423524.5  30423524.5   7640236  53206813   32220435.6  PushPop  :init_total                            
+     26.0         52564292          2  26282146.0  26282146.0   4204748  48359544   31222155.7  PushPop  :init_vertex_loop                      
+     20.4         41223731          2  20611865.5  20611865.5  19678650  21545081    1319766.0  PushPop  :insert_total                          
+      8.8         17708283          2   8854141.5   8854141.5   8683386   9024897     241484.7  PushPop  :insert_host_free                      
+      8.0         16198055          2   8099027.5   8099027.5   8058822   8139233      56859.2  PushPop  :insert_host_alloc                     
+      2.3          4684377          2   2342188.5   2342188.5   2294983   2389394      66758.7  PushPop  :init_device_copy_loop                 
+      2.0          4020971          2   2010485.5   2010485.5    996139   3024832    1434502.6  PushPop  :insert_preprocess                     
+      0.7          1412984          2    706492.0    706492.0    622831    790153     118314.5  PushPop  :insert_build_realloc                  
+      0.6          1197394          2    598697.0    598697.0    132408   1064986     659432.2  PushPop  CCCL:cub::DeviceRadixSort              
+      0.3           622701          2    311350.5    311350.5    310715    311986        898.7  PushPop  :insert_append                         
+      0.3           590393          2    295196.5    295196.5    290144    300249       7145.3  PushPop  :insert_h2d_copy                       
+      0.3           584374          2    292187.0    292187.0    248612    335762      61624.4  PushPop  :insert_adj_move                       
+      0.1           260960          8     32620.0     23104.5     16315     60771      18988.4  PushPop  CCCL:cub::DeviceScan::ExclusiveSum     
+      0.1           129224          4     32306.0     18543.0     14652     77486      30191.6  PushPop  CCCL:cub::DeviceSelect::Flagged        
+      0.1           124878          4     31219.5     22123.5     14372     66259      23755.9  PushPop  CCCL:cub::DeviceRunLengthEncode::Encode
+      0.0           100119          2     50059.5     50059.5     22323     77796      39225.3  PushPop  CCCL:cub::DeviceSelect::Unique         
+
+[4/7] Executing 'cuda_api_sum' stats report
+
+ Time (%)  Total Time (ns)  Num Calls  Avg (ns)   Med (ns)   Min (ns)  Max (ns)   StdDev (ns)             Name            
+ --------  ---------------  ---------  ---------  ---------  --------  ---------  -----------  ---------------------------
+     61.1        139584554         33  4229835.0   262683.0      5679  131552350   22856731.3  cudaMalloc                 
+     16.9         38552576          8  4819072.0  4234364.5   2433139    6938817    1738566.7  cudaHostAlloc              
+      8.1         18401727         18  1022318.2   284209.5      1633   15260644    3557870.6  cudaMallocAsync            
+      4.5         10251170          8  1281396.3  1032339.0    676511    1969596     497286.3  cudaFreeHost               
+      4.0          9187679         50   183753.6   159233.0     32669     482662     116510.6  cudaMemcpy                 
+      3.1          7023345         33   212828.6   190174.0      4978     780517     128536.0  cudaFree                   
+      0.8          1837136         70    26244.8     8137.0      4586     679062      80960.6  cudaLaunchKernel           
+      0.8          1746834         36    48523.2     6490.0       601     257154      75964.3  cudaDeviceSynchronize      
+      0.3           694367          1   694367.0   694367.0    694367     694367          0.0  cudaMemPoolSetAttribute    
+      0.2           429265         22    19512.0     7666.0      5578     213249      43849.9  cudaMemsetAsync            
+      0.2           398226          1   398226.0   398226.0    398226     398226          0.0  cudaMemGetInfo             
+      0.1           224738         18    12485.4      701.0       291     206680      48477.7  cudaDeviceGetDefaultMemPool
+      0.0            34548         18     1919.3     1131.0       791       7852       2112.2  cudaFreeAsync              
+      0.0            21091         70      301.3      220.0        80       1472        287.4  cuKernelGetName            
+      0.0            18550         18     1030.6      831.5       411       2744        585.4  cuLibraryGetKernel         
+      0.0             4366          1     4366.0     4366.0      4366       4366          0.0  cuModuleGetLoadingMode     
+
+[5/7] Executing 'cuda_gpu_kern_sum' stats report
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  --------  --------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
+     23.9           453977         10   45397.7   45903.0     42800     46959       1432.5  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortOnesweepKernel<cub::_V_300304_SM_750…
+     19.9           376596          2  188298.0  188298.0    188058    188538        339.4  improved::check_cross_dups_lb_kernel(int, const int *, int, const int *, const int *, const int *, …
+     19.0           361050          2  180525.0  180525.0    180445    180605        113.1  improved::append_batch_edges_lb_kernel(int, const int *, int, const int *, const int *, const int *…
+     11.8           224140          2  112070.0  112070.0    111830    112310        339.4  improved::adj_move_balanced_kernel(int, const int *, int, const int *, int *const *, int *const *, …
+      3.7            69319          4   17329.8   17322.0     16762     17913        478.8  void cub::_V_300304_SM_750::detail::reduce::DeviceReduceByKeyKernel<cub::_V_300304_SM_750::detail::…
+      3.3            63336          2   31668.0   31668.0     31572     31764        135.8  improved::gather_selected_edges_kernel(int, const int *, const int *, const int *, int *, int *)    
+      2.2            41968          2   20984.0   20984.0     20952     21016         45.3  void cub::_V_300304_SM_750::detail::select::DeviceSelectSweepKernel<cub::_V_300304_SM_750::detail::…
+      2.2            41104          8    5138.0    5262.0      4638      5342        288.7  void cub::_V_300304_SM_750::detail::scan::DeviceScanKernel<cub::_V_300304_SM_750::detail::scan::pol…
+      2.2            41073          2   20536.5   20536.5     20216     20857        453.3  improved::check_insert_realloc_kernel(int, const int *, const int *, const int *, int *const *, uns…
+      2.0            37107          4    9276.8    9229.0      5758     12891       4027.6  void cub::_V_300304_SM_750::detail::select::DeviceSelectSweepKernel<cub::_V_300304_SM_750::detail::…
+      1.8            33940          2   16970.0   16970.0     16826     17114        203.6  improved::unpack_edges_kernel(int, const unsigned long *, int *, int *, int)                        
+      1.8            33491          2   16745.5   16745.5     14011     19480       3867.2  improved::pack_edges_kernel(int, const int *, const int *, unsigned long *, int)                    
+      1.5            28693          2   14346.5   14346.5     14234     14459        159.1  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortHistogramKernel<cub::_V_300304_SM_75…
+      1.5            28084          2   14042.0   14042.0     13690     14394        497.8  improved::gather_insert_graph_deg_kernel(int, const int *, const int *, int *)                      
+      1.4            26198          2   13099.0   13099.0     12795     13403        429.9  improved::gather_realloc_metadata_kernel(int, const int *, const int *, const int *, const int *, i…
+      0.8            15611          2    7805.5    7805.5      7742      7869         89.8  improved::update_zero_deg_ptrs_kernel(int, const int *, const int *, int *const *, int **)          
+      0.4             7293          8     911.6     911.5       895       928         17.2  void cub::_V_300304_SM_750::detail::scan::DeviceScanInitKernel<cub::_V_300304_SM_750::ScanTileState…
+      0.3             5854          6     975.7     896.0       895      1344        180.9  void cub::_V_300304_SM_750::detail::scan::DeviceCompactInitKernel<cub::_V_300304_SM_750::ScanTileSt…
+      0.3             5120          4    1280.0    1248.0       896      1728        350.5  void cub::_V_300304_SM_750::detail::scan::DeviceCompactInitKernel<cub::_V_300304_SM_750::ReduceByKe…
+      0.1             2335          2    1167.5    1167.5      1152      1183         21.9  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortExclusiveSumKernel<cub::_V_300304_SM…
+
+[6/7] Executing 'cuda_gpu_mem_time_sum' stats report
+
+ Time (%)  Total Time (ns)  Count  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)           Operation          
+ --------  ---------------  -----  --------  --------  --------  --------  -----------  ----------------------------
+     80.3          3643864     28  130138.0  114182.0      5214    322248      98538.7  [CUDA memcpy Host-to-Device]
+     19.2           869661     22   39530.0    1999.5      1855    175679      55448.3  [CUDA memcpy Device-to-Host]
+      0.5            22714     22    1032.5    1311.5       320      2303        616.4  [CUDA memset]               
+
+[7/7] Executing 'cuda_gpu_mem_size_sum' stats report
+
+ Total (MB)  Count  Avg (MB)  Med (MB)  Min (MB)  Max (MB)  StdDev (MB)           Operation          
+ ----------  -----  --------  --------  --------  --------  -----------  ----------------------------
+     44.864     28     1.602     1.409     0.048     4.000        1.227  [CUDA memcpy Host-to-Device]
+     10.020     22     0.455     0.000     0.000     2.005        0.672  [CUDA memcpy Device-to-Host]
+      5.656     22     0.257     0.365     0.000     1.000        0.299  [CUDA memset]               
+
+Generated:
+	/home/spaceeramaster/HPCproj_backup/results/improved/nsys_dblp-2010_large_1m.nsys-rep
+	/home/spaceeramaster/HPCproj_backup/results/improved/nsys_dblp-2010_large_1m.sqlite
+

@@ -175,17 +175,13 @@ __global__ void delete_compact_block_kernel(int num_large,
 
     __shared__ int s_warp_sums[4][8];
     __shared__ int s_chunk_total;
-    __shared__ vid_t s_write_base;
 
     int tid = threadIdx.x;
     int warp_id = tid >> 5;
     int lane = tid & 31;
     unsigned lower_mask = (1u << lane) - 1u;
 
-    if (tid == 0) {
-        s_write_base = 0;
-    }
-    __syncthreads();
+    vid_t cur_base = 0;
 
     for (vid_t base = 0; base < old_deg; base += 1024) {
         vid_t nbr[4];
@@ -224,21 +220,18 @@ __global__ void delete_compact_block_kernel(int num_large,
         }
         __syncthreads();
 
-        vid_t cur_base = s_write_base;
         #pragma unroll
         for (int k = 0; k < 4; ++k) {
             if (keep[k] != 0) {
                 adj[cur_base + s_warp_sums[k][warp_id] + warp_rank[k]] = nbr[k];
             }
         }
-        if (tid == 0) {
-            s_write_base = cur_base + s_chunk_total;
-        }
+        cur_base += static_cast<vid_t>(s_chunk_total);
         __syncthreads();
     }
 
     if (tid == 0) {
-        vid_t new_deg = s_write_base;
+        vid_t new_deg = cur_base;
         all_new_deg[i] = new_deg;
         d_used[v] = new_deg;
 

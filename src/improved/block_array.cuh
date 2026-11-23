@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -53,33 +54,32 @@ public:
             cudaFreeAsync(d_edges_, 0);
             d_edges_ = nullptr;
         }
-        if (h_staging_) {
-            cudaFreeHost(h_staging_);
-            h_staging_ = nullptr;
-        }
     }
 
     BlockArray(const BlockArray&) = delete;
     BlockArray& operator=(const BlockArray&) = delete;
 
-    void enable_host_staging() {
-        if (h_staging_ == nullptr) {
-            CUDA_CHECK(cudaMallocHost(&h_staging_, total_edges_ * sizeof(vid_t)));
+    void enable_host_staging(int staged_blocks = -1) {
+        if (!h_staging_) {
+            int blocks = (staged_blocks >= 0 && staged_blocks < num_blocks_) ? staged_blocks : num_blocks_;
+            staged_edges_ = static_cast<size_t>(blocks) * block_size_;
+            h_staging_.reset(new vid_t[staged_edges_]);
         }
     }
 
     void stage_block_data(int block_idx, const vid_t* src, int count) {
         size_t offset = static_cast<size_t>(block_idx) * block_size_;
-        std::copy(src, src + count, h_staging_ + offset);
+        std::copy(src, src + count, h_staging_.get() + offset);
     }
 
     void flush_staging_to_device() {
-        if (h_staging_ != nullptr) {
-            CUDA_CHECK(cudaMemcpyAsync(d_edges_, h_staging_, total_edges_ * sizeof(vid_t),
-                                       cudaMemcpyHostToDevice, 0));
-            CUDA_CHECK(cudaStreamSynchronize(0));
-            CUDA_CHECK(cudaFreeHost(h_staging_));
-            h_staging_ = nullptr;
+        if (h_staging_) {
+            if (staged_edges_ > 0) {
+                CUDA_CHECK(cudaMemcpy(d_edges_, h_staging_.get(),
+                                      staged_edges_ * sizeof(vid_t), cudaMemcpyHostToDevice));
+            }
+            h_staging_.reset();
+            staged_edges_ = 0;
         }
     }
 
@@ -122,7 +122,8 @@ private:
     size_t total_edges_;
     BitTree bit_tree_;
     vid_t* d_edges_ = nullptr;
-    vid_t* h_staging_ = nullptr;
+    std::unique_ptr<vid_t[]> h_staging_;
+    size_t staged_edges_ = 0;
 };
 
 } // namespace improved

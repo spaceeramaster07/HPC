@@ -1,0 +1,10 @@
+BFS,dblp-2010,Hornet_ms=2.696,Hornet_MTEPS=531.86,CSR_ms=3.636,CSR_MTEPS=404.63,Speedup_vs_CSR=1.35x,visited=226413,traversed=1432920
+SPMV,dblp-2010,Hornet_ms=0.914,CSR_ms=0.839,Speedup_vs_CSR=0.92x
+BFS,in-2004,Hornet_ms=15.162,Hornet_MTEPS=1026.03,CSR_ms=14.436,CSR_MTEPS=1059.35,Speedup_vs_CSR=0.95x,visited=1325741,traversed=15178007
+SPMV,in-2004,Hornet_ms=4.239,CSR_ms=2.152,Speedup_vs_CSR=0.51x
+BFS,soc-LiveJournal1,Hornet_ms=14.378,Hornet_MTEPS=4889.09,CSR_ms=12.267,CSR_MTEPS=5559.72,Speedup_vs_CSR=0.85x,visited=4400347,traversed=68175771
+SPMV,soc-LiveJournal1,Hornet_ms=5.870,CSR_ms=4.755,Speedup_vs_CSR=0.81x
+BFS,cage15,Hornet_ms=20.449,Hornet_MTEPS=4867.30,CSR_ms=19.324,CSR_MTEPS=5134.88,Speedup_vs_CSR=0.94x,visited=5154859,traversed=99199551
+SPMV,cage15,Hornet_ms=6.314,CSR_ms=5.121,Speedup_vs_CSR=0.81x
+BFS,kron_g500-logn21,Hornet_ms=17.161,Hornet_MTEPS=10610.75,CSR_ms=17.230,CSR_MTEPS=10568.73,Speedup_vs_CSR=1.00x,visited=1543901,traversed=182082756
+SPMV,kron_g500-logn21,Hornet_ms=6.069,CSR_ms=5.868,Speedup_vs_CSR=0.97x

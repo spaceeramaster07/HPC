@@ -140,7 +140,7 @@ inline void batch_insert(HornetGraph& graph,
         ScopedPhaseTimer prep_timer("insert_preprocess", true);
         int uniq_count = 0;
 
-        if (batch_size <= 1024) {
+        if (batch_size <= 256) {
             // DS-3: Single-Block Shared-Memory Preprocessing Fast Path
             preprocess_small_batch_kernel<<<1, 256>>>(
                 batch_size, ws.d_raw_src, ws.d_raw_dst, vid_bits,

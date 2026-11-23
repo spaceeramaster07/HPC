@@ -1,0 +1,10 @@
+DYNAMIC_TC,dblp-2010,batch=10000,insert_ms=3.239,query_ms=0.194,total_ms=3.433,rate_upd_s=2912598,delta_triangles=2
+DYNAMIC_TC,dblp-2010,batch=100000,insert_ms=13.196,query_ms=0.905,total_ms=14.100,rate_upd_s=7091951,delta_triangles=17
+DYNAMIC_TC,in-2004,batch=10000,insert_ms=1.962,query_ms=0.101,total_ms=2.063,rate_upd_s=4846528,delta_triangles=93
+DYNAMIC_TC,in-2004,batch=100000,insert_ms=7.816,query_ms=0.386,total_ms=8.202,rate_upd_s=12191889,delta_triangles=1900
+DYNAMIC_TC,soc-LiveJournal1,batch=10000,insert_ms=1.695,query_ms=0.047,total_ms=1.742,rate_upd_s=5739465,delta_triangles=10
+DYNAMIC_TC,soc-LiveJournal1,batch=100000,insert_ms=7.510,query_ms=0.351,total_ms=7.860,rate_upd_s=12722254,delta_triangles=88
+DYNAMIC_TC,cage15,batch=10000,insert_ms=1.024,query_ms=0.052,total_ms=1.076,rate_upd_s=9293718,delta_triangles=2
+DYNAMIC_TC,cage15,batch=100000,insert_ms=2.619,query_ms=0.368,total_ms=2.987,rate_upd_s=33483271,delta_triangles=4
+DYNAMIC_TC,kron_g500-logn21,batch=10000,insert_ms=1.514,query_ms=0.111,total_ms=1.626,rate_upd_s=6151621,delta_triangles=3718
+DYNAMIC_TC,kron_g500-logn21,batch=100000,insert_ms=8.525,query_ms=0.570,total_ms=9.095,rate_upd_s=10995046,delta_triangles=28802
