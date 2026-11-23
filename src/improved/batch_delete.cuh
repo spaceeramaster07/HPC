@@ -1,21 +1,22 @@
 #pragma once
 
 #include "batch_workspace.cuh"
+#include <thrust/iterator/counting_iterator.h>
 
 namespace improved {
 
 __global__ void gather_delete_graph_info_kernel(int num_unique,
-                                                  const vid_t* __restrict__ unique_srcs,
-                                                  const vid_t* __restrict__ d_used,
-                                                  vid_t* const* __restrict__ d_ptr,
-                                                  vid_t* __restrict__ all_old_deg,
-                                                  vid_t* __restrict__ all_new_deg,
-                                                  vid_t** __restrict__ all_old_ptr,
-                                                  uint8_t* __restrict__ need_shrink,
-                                                  uint8_t* __restrict__ need_free_only,
-                                                  eoff_t* __restrict__ graph_deg,
-                                                  int* __restrict__ large_indices,
-                                                  int* __restrict__ large_count) {
+                                                const vid_t* __restrict__ unique_srcs,
+                                                const vid_t* __restrict__ d_used,
+                                                vid_t* const* __restrict__ d_ptr,
+                                                vid_t* __restrict__ all_old_deg,
+                                                vid_t* __restrict__ all_new_deg,
+                                                vid_t** __restrict__ all_old_ptr,
+                                                uint8_t* __restrict__ need_shrink,
+                                                uint8_t* __restrict__ need_free_only,
+                                                eoff_t* __restrict__ graph_deg,
+                                                int* __restrict__ large_indices,
+                                                int* __restrict__ large_count) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i == num_unique) {
         graph_deg[num_unique] = 0;
@@ -53,13 +54,13 @@ __global__ void gather_delete_graph_info_kernel(int num_unique,
 }
 
 __global__ void delete_mark_lb_kernel(int num_unique,
-                                        const eoff_t* __restrict__ graph_offsets,
-                                        eoff_t total_graph_work,
-                                        vid_t* const* __restrict__ all_old_ptr,
-                                        const eoff_t* __restrict__ batch_offsets,
-                                        const int* __restrict__ batch_deg,
-                                        const vid_t* __restrict__ batch_dst,
-                                        uint8_t* __restrict__ del_keep) {
+                                      const eoff_t* __restrict__ graph_offsets,
+                                      eoff_t total_graph_work,
+                                      vid_t* const* __restrict__ all_old_ptr,
+                                      const eoff_t* __restrict__ batch_offsets,
+                                      const int* __restrict__ batch_deg,
+                                      const vid_t* __restrict__ batch_dst,
+                                      uint8_t* __restrict__ del_keep) {
     int pos = 0;
     eoff_t local_edge = 0;
     eoff_t gid = 0;
@@ -270,6 +271,10 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     if (batch_size == 0) return;
 
     int blk = 256;
+    int vid_bits = (graph.nV() > 1) ? hornet_common::ceil_log2(graph.nV()) : 1;
+    if (vid_bits < 1) vid_bits = 1;
+    if (vid_bits > 32) vid_bits = 32;
+
     int uniq_count = 0;
     int num_unique = 0;
     eoff_t total_graph_work = 0;
@@ -280,31 +285,42 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     // -------------------------------------------------------------------------
     {
         ScopedPhaseTimer prep_timer("delete_preprocess", true);
+
+        // DS-2: Tight Bit-Packing & Partial end_bit
         pack_edges_kernel<<<(batch_size + blk - 1) / blk, blk>>>(
-            batch_size, ws.d_raw_src, ws.d_raw_dst, ws.d_keys_in);
+            batch_size, ws.d_raw_src, ws.d_raw_dst, ws.d_keys_in, vid_bits);
         CUDA_CHECK(cudaGetLastError());
 
+        int sort_bits = std::min(64, 2 * vid_bits);
         cub::DeviceRadixSort::SortKeys(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_in, ws.d_keys_sorted, batch_size);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_in, ws.d_keys_sorted,
+            batch_size, 0, sort_bits);
         cub::DeviceSelect::Unique(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_sorted, ws.d_keys_uniq, ws.d_scalar_count, batch_size);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_sorted, ws.d_keys_uniq,
+            ws.d_scalar_count, batch_size);
 
-        CUDA_CHECK(cudaMemcpy(&uniq_count, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        uniq_count = ws.h_pinned_counts[0];
         if (uniq_count == 0) return;
 
         unpack_edges_kernel<<<(uniq_count + blk - 1) / blk, blk>>>(
-            uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq);
+            uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq, vid_bits);
         CUDA_CHECK(cudaGetLastError());
 
         cub::DeviceRunLengthEncode::Encode(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs, ws.d_batch_deg, ws.d_scalar_count, uniq_count);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs,
+            ws.d_batch_deg, ws.d_scalar_count, uniq_count);
 
-        CUDA_CHECK(cudaMemcpy(&num_unique, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        num_unique = ws.h_pinned_counts[0];
         if (num_unique == 0) return;
 
         CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
         cub::DeviceScan::ExclusiveSum(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets, num_unique + 1);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets,
+            num_unique + 1);
 
         CUDA_CHECK(cudaMemsetAsync(ws.d_scalar_count, 0, sizeof(int)));
         gather_delete_graph_info_kernel<<<(num_unique + 1 + blk - 1) / blk, blk>>>(
@@ -315,11 +331,15 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
         CUDA_CHECK(cudaGetLastError());
 
         cub::DeviceScan::ExclusiveSum(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_graph_deg, ws.d_graph_offsets, num_unique + 1);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_graph_deg, ws.d_graph_offsets,
+            num_unique + 1);
 
-        CUDA_CHECK(cudaMemcpy(&total_graph_work, &ws.d_graph_offsets[num_unique],
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, &ws.d_graph_offsets[num_unique],
                               sizeof(eoff_t), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(&num_large, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        total_graph_work = ws.h_pinned_counts[0];
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        num_large = ws.h_pinned_counts[0];
     }
 
     if (total_graph_work == 0) return;
@@ -342,10 +362,6 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     // -------------------------------------------------------------------------
     int num_free_only = 0;
     int num_shrink = 0;
-    std::vector<vid_t> h_free_deg;
-    std::vector<vid_t*> h_free_ptr;
-    std::vector<vid_t> h_old_deg, h_new_deg;
-    std::vector<vid_t*> h_old_ptr;
 
     {
         ScopedPhaseTimer compact_timer("delete_compact", true);
@@ -367,38 +383,52 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
             CUDA_CHECK(cudaGetLastError());
         }
 
-        // Reclaim fully emptied blocks (new_deg == 0)
+        // DS-2: Reclaim fully emptied blocks (new_deg == 0) via 1 Flagged index pass + 1 gather kernel
         cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_old_deg, ws.d_need_free_only, ws.d_realloc_old_deg, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_old_ptr, ws.d_need_free_only, ws.d_realloc_old_ptr, ws.d_scalar_count, num_unique);
+            ws.d_cub_temp, ws.cub_temp_bytes, thrust::counting_iterator<int>(0),
+            ws.d_need_free_only, ws.d_selected_idx, ws.d_scalar_count, num_unique);
 
-        CUDA_CHECK(cudaMemcpy(&num_free_only, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        num_free_only = ws.h_pinned_counts[0];
+
         if (num_free_only > 0) {
-            h_free_deg.resize(num_free_only);
-            h_free_ptr.resize(num_free_only);
-            CUDA_CHECK(cudaMemcpy(h_free_deg.data(), ws.d_realloc_old_deg, num_free_only * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_free_ptr.data(), ws.d_realloc_old_ptr, num_free_only * sizeof(vid_t*), cudaMemcpyDeviceToHost));
+            gather_free_metadata_kernel<<<(num_free_only + blk - 1) / blk, blk>>>(
+                num_free_only, ws.d_selected_idx, ws.d_all_old_deg, ws.d_all_old_ptr,
+                ws.d_realloc_old_deg, ws.d_realloc_old_ptr);
+            CUDA_CHECK(cudaGetLastError());
+
+            CUDA_CHECK(cudaMemcpy(ws.h_free_deg, ws.d_realloc_old_deg,
+                                  num_free_only * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_free_ptr, ws.d_realloc_old_ptr,
+                                  num_free_only * sizeof(vid_t*), cudaMemcpyDeviceToHost));
         }
 
-        // Shrink blocks where new_deg < bsize(old_deg) / 2
+        // DS-2: Shrink blocks where new_deg < bsize(old_deg) / 2 via 1 Flagged index pass + 1 gather kernel
         cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_unique_srcs, ws.d_need_realloc, ws.d_realloc_v, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_old_deg, ws.d_need_realloc, ws.d_realloc_old_deg, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_new_deg, ws.d_need_realloc, ws.d_realloc_new_deg, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_old_ptr, ws.d_need_realloc, ws.d_realloc_old_ptr, ws.d_scalar_count, num_unique);
+            ws.d_cub_temp, ws.cub_temp_bytes, thrust::counting_iterator<int>(0),
+            ws.d_need_realloc, ws.d_selected_idx, ws.d_scalar_count, num_unique);
 
-        CUDA_CHECK(cudaMemcpy(&num_shrink, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        num_shrink = ws.h_pinned_counts[0];
+
         if (num_shrink > 0) {
-            h_old_deg.resize(num_shrink);
-            h_new_deg.resize(num_shrink);
-            h_old_ptr.resize(num_shrink);
-            CUDA_CHECK(cudaMemcpy(h_old_deg.data(), ws.d_realloc_old_deg, num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_new_deg.data(), ws.d_realloc_new_deg, num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_old_ptr.data(), ws.d_realloc_old_ptr, num_shrink * sizeof(vid_t*), cudaMemcpyDeviceToHost));
+            gather_realloc_metadata_kernel<<<(num_shrink + blk - 1) / blk, blk>>>(
+                num_shrink, ws.d_selected_idx, ws.d_unique_srcs,
+                ws.d_all_old_deg, ws.d_all_new_deg, ws.d_all_old_ptr,
+                ws.d_realloc_v, ws.d_realloc_old_deg, ws.d_realloc_new_deg,
+                ws.d_realloc_old_ptr);
+            CUDA_CHECK(cudaGetLastError());
+
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_v, ws.d_realloc_v,
+                                  num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_deg, ws.d_realloc_old_deg,
+                                  num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_new_deg, ws.d_realloc_new_deg,
+                                  num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_ptr, ws.d_realloc_old_ptr,
+                                  num_shrink * sizeof(vid_t*), cudaMemcpyDeviceToHost));
         }
     }
 
@@ -406,39 +436,42 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     // Phase 4-6: Shrink Block Allocation, H2D Pointer Copy, Balanced Move
     // -------------------------------------------------------------------------
     if (num_shrink > 0) {
-        std::vector<vid_t*> h_new_ptr(num_shrink, nullptr);
-
         {
             ScopedPhaseTimer alloc_timer("delete_host_alloc", false);
             auto& mgr = graph.memory_manager();
             for (int i = 0; i < num_shrink; ++i) {
-                h_new_ptr[i] = mgr.allocate_block(ceil_log2(h_new_deg[i]), false).ptr;
+                int log_b = hornet_common::ceil_log2(ws.h_realloc_new_deg[i]);
+                ws.h_realloc_new_ptr[i] = mgr.allocate_block(log_b, false).ptr;
             }
         }
 
-        std::vector<eoff_t> h_move_offsets(num_shrink + 1, 0);
-        eoff_t total_moves = 0;
         {
             ScopedPhaseTimer h2d_timer("delete_h2d_copy", true);
-            CUDA_CHECK(cudaMemcpy(ws.d_realloc_new_ptr, h_new_ptr.data(),
+            CUDA_CHECK(cudaMemcpy(ws.d_realloc_new_ptr, ws.h_realloc_new_ptr,
                                   num_shrink * sizeof(vid_t*), cudaMemcpyHostToDevice));
-            for (int i = 0; i < num_shrink; ++i) {
-                h_move_offsets[i + 1] = h_move_offsets[i] + h_new_deg[i];
-            }
-            total_moves = h_move_offsets[num_shrink];
-            if (total_moves > 0) {
-                CUDA_CHECK(cudaMemcpy(ws.d_move_offsets, h_move_offsets.data(),
-                                      (num_shrink + 1) * sizeof(eoff_t), cudaMemcpyHostToDevice));
-            }
         }
 
-        if (total_moves > 0) {
+        {
             ScopedPhaseTimer move_timer("delete_adj_move", true);
-            eoff_t grid = (total_moves + blk - 1) / blk;
-            adj_move_balanced_kernel<<<static_cast<unsigned int>(grid), blk>>>(
-                num_shrink, ws.d_move_offsets, total_moves,
-                ws.d_realloc_v, ws.d_realloc_old_ptr, ws.d_realloc_new_ptr, graph.d_ptr());
-            CUDA_CHECK(cudaGetLastError());
+
+            // DS-2: GPU ExclusiveSum for move_offsets
+            CUDA_CHECK(cudaMemsetAsync(&ws.d_realloc_new_deg[num_shrink], 0, sizeof(vid_t)));
+            cub::DeviceScan::ExclusiveSum(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_realloc_new_deg,
+                ws.d_move_offsets, num_shrink + 1);
+
+            eoff_t total_moves = 0;
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, &ws.d_move_offsets[num_shrink],
+                                  sizeof(eoff_t), cudaMemcpyDeviceToHost));
+            total_moves = ws.h_pinned_counts[0];
+
+            if (total_moves > 0) {
+                eoff_t grid = (total_moves + blk - 1) / blk;
+                adj_move_balanced_kernel<<<static_cast<unsigned int>(grid), blk>>>(
+                    num_shrink, ws.d_move_offsets, total_moves,
+                    ws.d_realloc_v, ws.d_realloc_old_ptr, ws.d_realloc_new_ptr, graph.d_ptr());
+                CUDA_CHECK(cudaGetLastError());
+            }
         }
     }
 
@@ -449,17 +482,16 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
         ScopedPhaseTimer free_timer("delete_host_free", false);
         auto& mgr = graph.memory_manager();
         for (int i = 0; i < num_free_only; ++i) {
-            if (h_free_deg[i] > 0 && h_free_ptr[i] != nullptr) {
-                mgr.reclaim_block(h_free_ptr[i], ceil_log2(h_free_deg[i]));
+            if (ws.h_free_deg[i] > 0 && ws.h_free_ptr[i] != nullptr) {
+                mgr.reclaim_block(ws.h_free_ptr[i], hornet_common::ceil_log2(ws.h_free_deg[i]));
             }
         }
         for (int i = 0; i < num_shrink; ++i) {
-            if (h_old_deg[i] > 0 && h_old_ptr[i] != nullptr) {
-                mgr.reclaim_block(h_old_ptr[i], ceil_log2(h_old_deg[i]));
+            if (ws.h_realloc_old_deg[i] > 0 && ws.h_realloc_old_ptr[i] != nullptr) {
+                mgr.reclaim_block(ws.h_realloc_old_ptr[i], hornet_common::ceil_log2(ws.h_realloc_old_deg[i]));
             }
         }
     }
 }
-
 
 } // namespace improved

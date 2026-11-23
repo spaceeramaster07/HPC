@@ -1,13 +1,14 @@
 #pragma once
 
 #include "batch_workspace.cuh"
+#include <thrust/iterator/counting_iterator.h>
 
 namespace improved {
 
 __global__ void gather_insert_graph_deg_kernel(int num_unique,
-                                                 const vid_t* __restrict__ unique_srcs,
-                                                 const vid_t* __restrict__ d_used,
-                                                 eoff_t* __restrict__ graph_deg) {
+                                               const vid_t* __restrict__ unique_srcs,
+                                               const vid_t* __restrict__ d_used,
+                                               eoff_t* __restrict__ graph_deg) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < num_unique) {
         graph_deg[i] = static_cast<eoff_t>(d_used[unique_srcs[i]]);
@@ -78,8 +79,6 @@ __global__ void check_insert_realloc_kernel(int num_unique,
     need_realloc[i] = (new_deg > old_cap) ? 1 : 0;
 }
 
-// Binary-search load-balanced adjacency list copy (Paper Footnote 2)
-
 __global__ void update_zero_deg_ptrs_kernel(int num_realloc,
                                             const vid_t* __restrict__ realloc_v,
                                             const vid_t* __restrict__ old_deg,
@@ -125,6 +124,11 @@ inline void batch_insert(HornetGraph& graph,
     int batch_size = ws.batch_size;
     if (batch_size == 0) return;
 
+    int blk = 256;
+    int vid_bits = (graph.nV() > 1) ? hornet_common::ceil_log2(graph.nV()) : 1;
+    if (vid_bits < 1) vid_bits = 1;
+    if (vid_bits > 32) vid_bits = 32;
+
     int num_unique = 0;
     int final_count = 0;
     vid_t* d_final_dst = nullptr;
@@ -134,34 +138,42 @@ inline void batch_insert(HornetGraph& graph,
     // -------------------------------------------------------------------------
     {
         ScopedPhaseTimer prep_timer("insert_preprocess", true);
-        int blk = 256;
 
+        // DS-2: Tight Bit-Packing & Partial end_bit
         pack_edges_kernel<<<(batch_size + blk - 1) / blk, blk>>>(
-            batch_size, ws.d_raw_src, ws.d_raw_dst, ws.d_keys_in);
+            batch_size, ws.d_raw_src, ws.d_raw_dst, ws.d_keys_in, vid_bits);
         CUDA_CHECK(cudaGetLastError());
 
+        int sort_bits = std::min(64, 2 * vid_bits);
         cub::DeviceRadixSort::SortKeys(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_in, ws.d_keys_sorted, batch_size);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_in, ws.d_keys_sorted,
+            batch_size, 0, sort_bits);
 
         cub::DeviceSelect::Unique(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_sorted, ws.d_keys_uniq, ws.d_scalar_count, batch_size);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_sorted, ws.d_keys_uniq,
+            ws.d_scalar_count, batch_size);
 
-        int uniq_count = 0;
-        CUDA_CHECK(cudaMemcpy(&uniq_count, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        int uniq_count = ws.h_pinned_counts[0];
         if (uniq_count == 0) return;
 
         unpack_edges_kernel<<<(uniq_count + blk - 1) / blk, blk>>>(
-            uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq);
+            uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq, vid_bits);
         CUDA_CHECK(cudaGetLastError());
 
         cub::DeviceRunLengthEncode::Encode(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs, ws.d_batch_deg, ws.d_scalar_count, uniq_count);
-        CUDA_CHECK(cudaMemcpy(&num_unique, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs,
+            ws.d_batch_deg, ws.d_scalar_count, uniq_count);
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        num_unique = ws.h_pinned_counts[0];
         if (num_unique == 0) return;
 
         CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
         cub::DeviceScan::ExclusiveSum(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets, num_unique + 1);
+            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets,
+            num_unique + 1);
 
         vid_t* d_final_src = ws.d_src_uniq;
         d_final_dst = ws.d_dst_uniq;
@@ -173,11 +185,13 @@ inline void batch_insert(HornetGraph& graph,
             CUDA_CHECK(cudaGetLastError());
 
             cub::DeviceScan::ExclusiveSum(
-                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_graph_deg, ws.d_graph_offsets, num_unique + 1);
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_graph_deg, ws.d_graph_offsets,
+                num_unique + 1);
 
             eoff_t total_graph_work = 0;
-            CUDA_CHECK(cudaMemcpy(&total_graph_work, &ws.d_graph_offsets[num_unique],
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, &ws.d_graph_offsets[num_unique],
                                   sizeof(eoff_t), cudaMemcpyDeviceToHost));
+            total_graph_work = ws.h_pinned_counts[0];
 
             CUDA_CHECK(cudaMemsetAsync(ws.d_keep, 1, uniq_count * sizeof(uint8_t)));
             if (total_graph_work > 0) {
@@ -189,24 +203,35 @@ inline void batch_insert(HornetGraph& graph,
                 CUDA_CHECK(cudaGetLastError());
             }
 
+            // DS-2: 1 Flagged pass on counting_iterator + 1 gather kernel
             cub::DeviceSelect::Flagged(
-                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_keep, ws.d_filt_src, ws.d_scalar_count, uniq_count);
-            cub::DeviceSelect::Flagged(
-                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_dst_uniq, ws.d_keep, ws.d_filt_dst, ws.d_scalar_count, uniq_count);
+                ws.d_cub_temp, ws.cub_temp_bytes, thrust::counting_iterator<int>(0),
+                ws.d_keep, ws.d_selected_idx, ws.d_scalar_count, uniq_count);
 
-            CUDA_CHECK(cudaMemcpy(&final_count, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                                  sizeof(int), cudaMemcpyDeviceToHost));
+            final_count = ws.h_pinned_counts[0];
             if (final_count == 0) return;
+
+            gather_selected_edges_kernel<<<(final_count + blk - 1) / blk, blk>>>(
+                final_count, ws.d_selected_idx, ws.d_src_uniq, ws.d_dst_uniq,
+                ws.d_filt_src, ws.d_filt_dst);
+            CUDA_CHECK(cudaGetLastError());
 
             d_final_src = ws.d_filt_src;
             d_final_dst = ws.d_filt_dst;
 
             if (final_count < uniq_count) {
                 cub::DeviceRunLengthEncode::Encode(
-                    ws.d_cub_temp, ws.cub_temp_bytes, d_final_src, ws.d_unique_srcs, ws.d_batch_deg, ws.d_scalar_count, final_count);
-                CUDA_CHECK(cudaMemcpy(&num_unique, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+                    ws.d_cub_temp, ws.cub_temp_bytes, d_final_src, ws.d_unique_srcs,
+                    ws.d_batch_deg, ws.d_scalar_count, final_count);
+                CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                                      sizeof(int), cudaMemcpyDeviceToHost));
+                num_unique = ws.h_pinned_counts[0];
                 CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
                 cub::DeviceScan::ExclusiveSum(
-                    ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets, num_unique + 1);
+                    ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets,
+                    num_unique + 1);
             }
         }
     }
@@ -215,10 +240,6 @@ inline void batch_insert(HornetGraph& graph,
     // Phase 2: Build Reallocation List (Device -> Host)
     // -------------------------------------------------------------------------
     int num_realloc = 0;
-    std::vector<vid_t> h_realloc_v;
-    std::vector<vid_t> h_realloc_old_deg;
-    std::vector<vid_t> h_realloc_new_deg;
-    std::vector<vid_t*> h_realloc_old_ptr;
 
     {
         ScopedPhaseTimer realloc_timer("insert_build_realloc", true);
@@ -229,33 +250,36 @@ inline void batch_insert(HornetGraph& graph,
             ws.d_need_realloc, ws.d_all_old_deg, ws.d_all_new_deg, ws.d_all_old_ptr);
         CUDA_CHECK(cudaGetLastError());
 
+        // DS-2: 1 Flagged pass on counting_iterator + 1 gather kernel
         cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_unique_srcs, ws.d_need_realloc, ws.d_realloc_v, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_old_deg, ws.d_need_realloc, ws.d_realloc_old_deg, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_new_deg, ws.d_need_realloc, ws.d_realloc_new_deg, ws.d_scalar_count, num_unique);
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_all_old_ptr, ws.d_need_realloc, ws.d_realloc_old_ptr, ws.d_scalar_count, num_unique);
+            ws.d_cub_temp, ws.cub_temp_bytes, thrust::counting_iterator<int>(0),
+            ws.d_need_realloc, ws.d_selected_idx, ws.d_scalar_count, num_unique);
 
-        CUDA_CHECK(cudaMemcpy(&num_realloc, ws.d_scalar_count, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                              sizeof(int), cudaMemcpyDeviceToHost));
+        num_realloc = ws.h_pinned_counts[0];
 
         if (num_realloc > 0) {
-            h_realloc_v.resize(num_realloc);
-            h_realloc_old_deg.resize(num_realloc);
-            h_realloc_new_deg.resize(num_realloc);
-            h_realloc_old_ptr.resize(num_realloc);
+            gather_realloc_metadata_kernel<<<(num_realloc + blk - 1) / blk, blk>>>(
+                num_realloc, ws.d_selected_idx, ws.d_unique_srcs,
+                ws.d_all_old_deg, ws.d_all_new_deg, ws.d_all_old_ptr,
+                ws.d_realloc_v, ws.d_realloc_old_deg, ws.d_realloc_new_deg,
+                ws.d_realloc_old_ptr);
+            CUDA_CHECK(cudaGetLastError());
 
-            CUDA_CHECK(cudaMemcpy(h_realloc_v.data(), ws.d_realloc_v, num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_realloc_old_deg.data(), ws.d_realloc_old_deg, num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_realloc_new_deg.data(), ws.d_realloc_new_deg, num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_realloc_old_ptr.data(), ws.d_realloc_old_ptr, num_realloc * sizeof(vid_t*), cudaMemcpyDeviceToHost));
+            // DS-2: Copy to persistent pinned host buffers
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_v, ws.d_realloc_v,
+                                  num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_deg, ws.d_realloc_old_deg,
+                                  num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_new_deg, ws.d_realloc_new_deg,
+                                  num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_ptr, ws.d_realloc_old_ptr,
+                                  num_realloc * sizeof(vid_t*), cudaMemcpyDeviceToHost));
         }
     }
 
     if (num_realloc > 0) {
-        std::vector<vid_t*> h_realloc_new_ptr(num_realloc, nullptr);
-
         // ---------------------------------------------------------------------
         // Phase 3: Host Block Allocation via B+Tree & VecTree
         // ---------------------------------------------------------------------
@@ -263,8 +287,8 @@ inline void batch_insert(HornetGraph& graph,
             ScopedPhaseTimer alloc_timer("insert_host_alloc", false);
             auto& mgr = graph.memory_manager();
             for (int r = 0; r < num_realloc; ++r) {
-                int log_b = ceil_log2(h_realloc_new_deg[r]);
-                h_realloc_new_ptr[r] = mgr.allocate_block(log_b, false).ptr;
+                int log_b = hornet_common::ceil_log2(ws.h_realloc_new_deg[r]);
+                ws.h_realloc_new_ptr[r] = mgr.allocate_block(log_b, false).ptr;
             }
         }
 
@@ -273,7 +297,7 @@ inline void batch_insert(HornetGraph& graph,
         // ---------------------------------------------------------------------
         {
             ScopedPhaseTimer h2d_timer("insert_h2d_copy", true);
-            CUDA_CHECK(cudaMemcpy(ws.d_realloc_new_ptr, h_realloc_new_ptr.data(),
+            CUDA_CHECK(cudaMemcpy(ws.d_realloc_new_ptr, ws.h_realloc_new_ptr,
                                   num_realloc * sizeof(vid_t*), cudaMemcpyHostToDevice));
         }
 
@@ -283,11 +307,16 @@ inline void batch_insert(HornetGraph& graph,
         {
             ScopedPhaseTimer move_timer("insert_adj_move", true);
 
-            std::vector<eoff_t> h_move_offsets(num_realloc + 1, 0);
-            for (int r = 0; r < num_realloc; ++r) {
-                h_move_offsets[r + 1] = h_move_offsets[r] + h_realloc_old_deg[r];
-            }
-            eoff_t total_moves = h_move_offsets[num_realloc];
+            // DS-2: GPU ExclusiveSum for move_offsets
+            CUDA_CHECK(cudaMemsetAsync(&ws.d_realloc_old_deg[num_realloc], 0, sizeof(vid_t)));
+            cub::DeviceScan::ExclusiveSum(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_realloc_old_deg,
+                ws.d_move_offsets, num_realloc + 1);
+
+            eoff_t total_moves = 0;
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, &ws.d_move_offsets[num_realloc],
+                                  sizeof(eoff_t), cudaMemcpyDeviceToHost));
+            total_moves = ws.h_pinned_counts[0];
 
             int blk = 256;
             update_zero_deg_ptrs_kernel<<<(num_realloc + blk - 1) / blk, blk>>>(
@@ -295,9 +324,6 @@ inline void batch_insert(HornetGraph& graph,
             CUDA_CHECK(cudaGetLastError());
 
             if (total_moves > 0) {
-                CUDA_CHECK(cudaMemcpy(ws.d_move_offsets, h_move_offsets.data(),
-                                      (num_realloc + 1) * sizeof(eoff_t), cudaMemcpyHostToDevice));
-
                 eoff_t grid = (total_moves + blk - 1) / blk;
                 adj_move_balanced_kernel<<<static_cast<unsigned int>(grid), blk>>>(
                     num_realloc, ws.d_move_offsets, total_moves,
@@ -313,9 +339,9 @@ inline void batch_insert(HornetGraph& graph,
             ScopedPhaseTimer free_timer("insert_host_free", false);
             auto& mgr = graph.memory_manager();
             for (int r = 0; r < num_realloc; ++r) {
-                if (h_realloc_old_deg[r] > 0 && h_realloc_old_ptr[r] != nullptr) {
-                    int old_log_b = ceil_log2(h_realloc_old_deg[r]);
-                    mgr.reclaim_block(h_realloc_old_ptr[r], old_log_b);
+                if (ws.h_realloc_old_deg[r] > 0 && ws.h_realloc_old_ptr[r] != nullptr) {
+                    int old_log_b = hornet_common::ceil_log2(ws.h_realloc_old_deg[r]);
+                    mgr.reclaim_block(ws.h_realloc_old_ptr[r], old_log_b);
                 }
             }
         }
@@ -335,9 +361,5 @@ inline void batch_insert(HornetGraph& graph,
         CUDA_CHECK(cudaGetLastError());
     }
 }
-
-/**
- * @brief Algorithm 1: Dynamic Batch Deletion (Paper Section III-E).
- */
 
 } // namespace improved

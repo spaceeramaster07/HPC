@@ -4,33 +4,95 @@
 #include "types.cuh"
 
 #include <cub/cub.cuh>
+#include <thrust/iterator/counting_iterator.h>
 #include <algorithm>
 #include <cstdint>
 #include <vector>
 
 namespace improved {
 
-// Pack/unpack (src, dst) into 64-bit sortable keys
+// Pack/unpack (src, dst) into 64-bit sortable keys with tight bit-packing
 __global__ void pack_edges_kernel(int n,
                                   const vid_t* __restrict__ src,
                                   const vid_t* __restrict__ dst,
-                                  uint64_t* __restrict__ keys) {
+                                  uint64_t* __restrict__ keys,
+                                  int vid_bits = 32) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
-        keys[i] = (static_cast<uint64_t>(static_cast<uint32_t>(src[i])) << 32) |
-                  static_cast<uint32_t>(dst[i]);
+        uint64_t dst_mask = (vid_bits >= 32) ? 0xFFFFFFFFULL : ((1ULL << vid_bits) - 1ULL);
+        keys[i] = (static_cast<uint64_t>(static_cast<uint32_t>(src[i])) << vid_bits) |
+                  (static_cast<uint64_t>(static_cast<uint32_t>(dst[i])) & dst_mask);
     }
 }
 
 __global__ void unpack_edges_kernel(int n,
                                     const uint64_t* __restrict__ keys,
                                     vid_t* __restrict__ src,
-                                    vid_t* __restrict__ dst) {
+                                    vid_t* __restrict__ dst,
+                                    int vid_bits = 32) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
+        uint64_t dst_mask = (vid_bits >= 32) ? 0xFFFFFFFFULL : ((1ULL << vid_bits) - 1ULL);
         uint64_t k = keys[i];
-        src[i] = static_cast<vid_t>(static_cast<uint32_t>(k >> 32));
-        dst[i] = static_cast<vid_t>(static_cast<uint32_t>(k & 0xFFFFFFFFULL));
+        src[i] = static_cast<vid_t>(static_cast<uint32_t>(k >> vid_bits));
+        dst[i] = static_cast<vid_t>(static_cast<uint32_t>(k & dst_mask));
+    }
+}
+
+/**
+ * @brief DS-2: 1-Pass Gather for Selected Edges (filtering graph dups).
+ */
+__global__ void gather_selected_edges_kernel(int num_selected,
+                                             const int* __restrict__ selected_idx,
+                                             const vid_t* __restrict__ in_src,
+                                             const vid_t* __restrict__ in_dst,
+                                             vid_t* __restrict__ out_src,
+                                             vid_t* __restrict__ out_dst) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < num_selected) {
+        int idx = selected_idx[i];
+        out_src[i] = in_src[idx];
+        out_dst[i] = in_dst[idx];
+    }
+}
+
+/**
+ * @brief DS-2: 1-Pass Gather for Reallocation Metadata (realloc list / shrink list).
+ */
+__global__ void gather_realloc_metadata_kernel(int num_realloc,
+                                               const int* __restrict__ selected_idx,
+                                               const vid_t* __restrict__ unique_srcs,
+                                               const vid_t* __restrict__ all_old_deg,
+                                               const vid_t* __restrict__ all_new_deg,
+                                               vid_t* const* __restrict__ all_old_ptr,
+                                               vid_t* __restrict__ realloc_v,
+                                               vid_t* __restrict__ realloc_old_deg,
+                                               vid_t* __restrict__ realloc_new_deg,
+                                               vid_t** __restrict__ realloc_old_ptr) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < num_realloc) {
+        int idx = selected_idx[i];
+        realloc_v[i] = unique_srcs[idx];
+        realloc_old_deg[i] = all_old_deg[idx];
+        realloc_new_deg[i] = all_new_deg[idx];
+        realloc_old_ptr[i] = all_old_ptr[idx];
+    }
+}
+
+/**
+ * @brief DS-2: 1-Pass Gather for Deletion Free Metadata (free list).
+ */
+__global__ void gather_free_metadata_kernel(int num_free_only,
+                                            const int* __restrict__ selected_idx,
+                                            const vid_t* __restrict__ all_old_deg,
+                                            vid_t* const* __restrict__ all_old_ptr,
+                                            vid_t* __restrict__ free_deg,
+                                            vid_t** __restrict__ free_ptr) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < num_free_only) {
+        int idx = selected_idx[i];
+        free_deg[i] = all_old_deg[idx];
+        free_ptr[i] = all_old_ptr[idx];
     }
 }
 
@@ -162,6 +224,7 @@ struct BatchWorkspace {
     int batch_size = 0;
     size_t del_keep_capacity = 0;
 
+    // Device batch buffers
     vid_t* d_raw_src = nullptr;
     vid_t* d_raw_dst = nullptr;
     uint64_t* d_keys_in = nullptr;
@@ -193,42 +256,65 @@ struct BatchWorkspace {
     vid_t** d_realloc_new_ptr = nullptr;
     eoff_t* d_move_offsets = nullptr;
 
+    // DS-2: 1-Pass Flagged index buffer
+    int* d_selected_idx = nullptr;
     int* d_scalar_count = nullptr;
     void* d_cub_temp = nullptr;
     size_t cub_temp_bytes = 0;
 
+    // DS-2: Persistent pinned host buffers for zero-realloc metadata transfers
+    int host_capacity = 0;
+    vid_t* h_realloc_v = nullptr;
+    vid_t* h_realloc_old_deg = nullptr;
+    vid_t* h_realloc_new_deg = nullptr;
+    vid_t** h_realloc_old_ptr = nullptr;
+    vid_t** h_realloc_new_ptr = nullptr;
+    vid_t* h_free_deg = nullptr;
+    vid_t** h_free_ptr = nullptr;
+    int* h_pinned_counts = nullptr;
+
     ~BatchWorkspace() { free_all(); }
 
     void free_all() {
-        cudaFree(d_raw_src);
-        cudaFree(d_raw_dst);
-        cudaFree(d_keys_in);
-        cudaFree(d_keys_sorted);
-        cudaFree(d_keys_uniq);
-        cudaFree(d_src_uniq);
-        cudaFree(d_dst_uniq);
-        cudaFree(d_keep);
-        cudaFree(d_filt_src);
-        cudaFree(d_filt_dst);
-        cudaFree(d_unique_srcs);
-        cudaFree(d_batch_deg);
-        cudaFree(d_batch_offsets);
-        cudaFree(d_graph_deg);
-        cudaFree(d_graph_offsets);
-        cudaFree(d_del_keep);
-        cudaFree(d_need_realloc);
-        cudaFree(d_need_free_only);
-        cudaFree(d_all_old_deg);
-        cudaFree(d_all_new_deg);
-        cudaFree(d_all_old_ptr);
-        cudaFree(d_realloc_v);
-        cudaFree(d_realloc_old_deg);
-        cudaFree(d_realloc_new_deg);
-        cudaFree(d_realloc_old_ptr);
-        cudaFree(d_realloc_new_ptr);
-        cudaFree(d_move_offsets);
-        cudaFree(d_scalar_count);
-        cudaFree(d_cub_temp);
+        if (d_raw_src) cudaFree(d_raw_src);
+        if (d_raw_dst) cudaFree(d_raw_dst);
+        if (d_keys_in) cudaFree(d_keys_in);
+        if (d_keys_sorted) cudaFree(d_keys_sorted);
+        if (d_keys_uniq) cudaFree(d_keys_uniq);
+        if (d_src_uniq) cudaFree(d_src_uniq);
+        if (d_dst_uniq) cudaFree(d_dst_uniq);
+        if (d_keep) cudaFree(d_keep);
+        if (d_filt_src) cudaFree(d_filt_src);
+        if (d_filt_dst) cudaFree(d_filt_dst);
+        if (d_unique_srcs) cudaFree(d_unique_srcs);
+        if (d_batch_deg) cudaFree(d_batch_deg);
+        if (d_batch_offsets) cudaFree(d_batch_offsets);
+        if (d_graph_deg) cudaFree(d_graph_deg);
+        if (d_graph_offsets) cudaFree(d_graph_offsets);
+        if (d_del_keep) cudaFree(d_del_keep);
+        if (d_need_realloc) cudaFree(d_need_realloc);
+        if (d_need_free_only) cudaFree(d_need_free_only);
+        if (d_all_old_deg) cudaFree(d_all_old_deg);
+        if (d_all_new_deg) cudaFree(d_all_new_deg);
+        if (d_all_old_ptr) cudaFree(d_all_old_ptr);
+        if (d_realloc_v) cudaFree(d_realloc_v);
+        if (d_realloc_old_deg) cudaFree(d_realloc_old_deg);
+        if (d_realloc_new_deg) cudaFree(d_realloc_new_deg);
+        if (d_realloc_old_ptr) cudaFree(d_realloc_old_ptr);
+        if (d_realloc_new_ptr) cudaFree(d_realloc_new_ptr);
+        if (d_move_offsets) cudaFree(d_move_offsets);
+        if (d_selected_idx) cudaFree(d_selected_idx);
+        if (d_scalar_count) cudaFree(d_scalar_count);
+        if (d_cub_temp) cudaFree(d_cub_temp);
+
+        if (h_realloc_v) cudaFreeHost(h_realloc_v);
+        if (h_realloc_old_deg) cudaFreeHost(h_realloc_old_deg);
+        if (h_realloc_new_deg) cudaFreeHost(h_realloc_new_deg);
+        if (h_realloc_old_ptr) cudaFreeHost(h_realloc_old_ptr);
+        if (h_realloc_new_ptr) cudaFreeHost(h_realloc_new_ptr);
+        if (h_free_deg) cudaFreeHost(h_free_deg);
+        if (h_free_ptr) cudaFreeHost(h_free_ptr);
+        if (h_pinned_counts) cudaFreeHost(h_pinned_counts);
 
         d_raw_src = d_raw_dst = d_src_uniq = d_dst_uniq = nullptr;
         d_filt_src = d_filt_dst = d_unique_srcs = nullptr;
@@ -238,9 +324,18 @@ struct BatchWorkspace {
         d_batch_offsets = d_graph_deg = d_graph_offsets = d_move_offsets = nullptr;
         d_all_old_deg = d_all_new_deg = d_realloc_v = d_realloc_old_deg = d_realloc_new_deg = nullptr;
         d_all_old_ptr = d_realloc_old_ptr = d_realloc_new_ptr = nullptr;
+        d_selected_idx = nullptr;
         d_scalar_count = nullptr;
         d_cub_temp = nullptr;
+
+        h_realloc_v = h_realloc_old_deg = h_realloc_new_deg = nullptr;
+        h_realloc_old_ptr = h_realloc_new_ptr = nullptr;
+        h_free_deg = nullptr;
+        h_free_ptr = nullptr;
+        h_pinned_counts = nullptr;
+
         capacity = 0;
+        host_capacity = 0;
         del_keep_capacity = 0;
         cub_temp_bytes = 0;
     }
@@ -283,18 +378,32 @@ struct BatchWorkspace {
         CUDA_CHECK(cudaMalloc(&d_all_new_deg, capacity * sizeof(vid_t)));
         CUDA_CHECK(cudaMalloc(&d_all_old_ptr, capacity * sizeof(vid_t*)));
         CUDA_CHECK(cudaMalloc(&d_realloc_v, capacity * sizeof(vid_t)));
-        CUDA_CHECK(cudaMalloc(&d_realloc_old_deg, capacity * sizeof(vid_t)));
-        CUDA_CHECK(cudaMalloc(&d_realloc_new_deg, capacity * sizeof(vid_t)));
+        CUDA_CHECK(cudaMalloc(&d_realloc_old_deg, (capacity + 1) * sizeof(vid_t)));
+        CUDA_CHECK(cudaMalloc(&d_realloc_new_deg, (capacity + 1) * sizeof(vid_t)));
         CUDA_CHECK(cudaMalloc(&d_realloc_old_ptr, capacity * sizeof(vid_t*)));
         CUDA_CHECK(cudaMalloc(&d_realloc_new_ptr, capacity * sizeof(vid_t*)));
         CUDA_CHECK(cudaMalloc(&d_move_offsets, (capacity + 1) * sizeof(eoff_t)));
-        CUDA_CHECK(cudaMalloc(&d_scalar_count, sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_selected_idx, capacity * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_scalar_count, 8 * sizeof(int)));
+
+        // Persistent pinned host buffers for host-side metadata processing
+        CUDA_CHECK(cudaMallocHost(&h_realloc_v, capacity * sizeof(vid_t)));
+        CUDA_CHECK(cudaMallocHost(&h_realloc_old_deg, (capacity + 1) * sizeof(vid_t)));
+        CUDA_CHECK(cudaMallocHost(&h_realloc_new_deg, (capacity + 1) * sizeof(vid_t)));
+        CUDA_CHECK(cudaMallocHost(&h_realloc_old_ptr, capacity * sizeof(vid_t*)));
+        CUDA_CHECK(cudaMallocHost(&h_realloc_new_ptr, capacity * sizeof(vid_t*)));
+        CUDA_CHECK(cudaMallocHost(&h_free_deg, capacity * sizeof(vid_t)));
+        CUDA_CHECK(cudaMallocHost(&h_free_ptr, capacity * sizeof(vid_t*)));
+        CUDA_CHECK(cudaMallocHost(&h_pinned_counts, 8 * sizeof(int)));
+        host_capacity = capacity;
 
         // Pre-compute max CUB temporary storage needed across all operations
         size_t req = 0, tmp = 0;
         cub::DeviceRadixSort::SortKeys(nullptr, tmp, d_keys_in, d_keys_sorted, capacity);
         req = std::max(req, tmp);
         cub::DeviceSelect::Unique(nullptr, tmp, d_keys_sorted, d_keys_uniq, d_scalar_count, capacity);
+        req = std::max(req, tmp);
+        cub::DeviceSelect::Flagged(nullptr, tmp, thrust::counting_iterator<int>(0), d_need_realloc, d_selected_idx, d_scalar_count, capacity);
         req = std::max(req, tmp);
         cub::DeviceSelect::Flagged(nullptr, tmp, d_all_old_ptr, d_need_realloc, d_realloc_old_ptr, d_scalar_count, capacity);
         req = std::max(req, tmp);
@@ -305,6 +414,8 @@ struct BatchWorkspace {
         cub::DeviceScan::ExclusiveSum(nullptr, tmp, d_batch_deg, d_batch_offsets, capacity + 1);
         req = std::max(req, tmp);
         cub::DeviceScan::ExclusiveSum(nullptr, tmp, d_graph_deg, d_graph_offsets, capacity + 1);
+        req = std::max(req, tmp);
+        cub::DeviceScan::ExclusiveSum(nullptr, tmp, d_realloc_old_deg, d_move_offsets, capacity + 1);
         req = std::max(req, tmp);
 
         cub_temp_bytes = std::max<size_t>(req, 256);
@@ -320,9 +431,5 @@ struct BatchWorkspace {
         }
     }
 };
-
-/**
- * @brief Algorithm 1: Dynamic Batch Insertion (Paper Section III-E).
- */
 
 } // namespace improved
