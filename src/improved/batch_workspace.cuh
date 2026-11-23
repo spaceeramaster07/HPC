@@ -40,6 +40,98 @@ __global__ void unpack_edges_kernel(int n,
 }
 
 /**
+ * @brief DS-3: Single-Block Shared-Memory Preprocessing Fast Path for B <= 1024.
+ *
+ * Performs pack, BlockRadixSort, deduplication, unpack, RLE, and prefix sum
+ * entirely in shared memory in a single <<<1, 256>>> kernel launch.
+ */
+__global__ void preprocess_small_batch_kernel(int batch_size,
+                                              const vid_t* __restrict__ raw_src,
+                                              const vid_t* __restrict__ raw_dst,
+                                              int vid_bits,
+                                              vid_t* __restrict__ src_uniq,
+                                              vid_t* __restrict__ dst_uniq,
+                                              vid_t* __restrict__ unique_srcs,
+                                              int* __restrict__ batch_deg,
+                                              eoff_t* __restrict__ batch_offsets,
+                                              int* __restrict__ out_counts) {
+    using BlockRadixSort = cub::BlockRadixSort<uint64_t, 256, 4>;
+    __shared__ typename BlockRadixSort::TempStorage temp_storage;
+    __shared__ uint64_t s_keys[1024];
+
+    uint64_t dst_mask = (vid_bits >= 32) ? 0xFFFFFFFFULL : ((1ULL << vid_bits) - 1ULL);
+    uint64_t keys[4];
+
+    #pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        int idx = threadIdx.x * 4 + k;
+        if (idx < batch_size) {
+            keys[k] = (static_cast<uint64_t>(static_cast<uint32_t>(raw_src[idx])) << vid_bits) |
+                      (static_cast<uint64_t>(static_cast<uint32_t>(raw_dst[idx])) & dst_mask);
+        } else {
+            keys[k] = UINT64_MAX;
+        }
+    }
+
+    int end_bit = (2 * vid_bits < 64) ? (2 * vid_bits + 1) : 64;
+    BlockRadixSort(temp_storage).Sort(keys, 0, end_bit);
+    __syncthreads();
+
+    #pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        int idx = threadIdx.x * 4 + k;
+        if (idx < batch_size) {
+            s_keys[idx] = keys[k];
+        }
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        int uniq_count = 0;
+        int num_unique = 0;
+        vid_t cur_src = -1;
+        int cur_deg = 0;
+
+        for (int i = 0; i < batch_size; ++i) {
+            uint64_t k_val = s_keys[i];
+            if (i == 0 || k_val != s_keys[i - 1]) {
+                vid_t s = static_cast<vid_t>(static_cast<uint32_t>(k_val >> vid_bits));
+                vid_t d = static_cast<vid_t>(static_cast<uint32_t>(k_val & dst_mask));
+                src_uniq[uniq_count] = s;
+                dst_uniq[uniq_count] = d;
+
+                if (uniq_count == 0 || s != cur_src) {
+                    if (uniq_count > 0) {
+                        batch_deg[num_unique] = cur_deg;
+                        num_unique++;
+                    }
+                    unique_srcs[num_unique] = s;
+                    cur_src = s;
+                    cur_deg = 1;
+                } else {
+                    cur_deg++;
+                }
+                uniq_count++;
+            }
+        }
+
+        if (uniq_count > 0) {
+            batch_deg[num_unique] = cur_deg;
+            num_unique++;
+        }
+
+        batch_offsets[0] = 0;
+        for (int j = 0; j < num_unique; ++j) {
+            batch_offsets[j + 1] = batch_offsets[j] + batch_deg[j];
+        }
+        batch_deg[num_unique] = 0;
+
+        out_counts[0] = uniq_count;
+        out_counts[1] = num_unique;
+    }
+}
+
+/**
  * @brief DS-2: 1-Pass Gather for Selected Edges (filtering graph dups).
  */
 __global__ void gather_selected_edges_kernel(int num_selected,

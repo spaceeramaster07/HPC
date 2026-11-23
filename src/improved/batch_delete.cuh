@@ -286,41 +286,57 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     {
         ScopedPhaseTimer prep_timer("delete_preprocess", true);
 
-        // DS-2: Tight Bit-Packing & Partial end_bit
-        pack_edges_kernel<<<(batch_size + blk - 1) / blk, blk>>>(
-            batch_size, ws.d_raw_src, ws.d_raw_dst, ws.d_keys_in, vid_bits);
-        CUDA_CHECK(cudaGetLastError());
+        if (batch_size <= 1024) {
+            // DS-3: Single-Block Shared-Memory Preprocessing Fast Path
+            preprocess_small_batch_kernel<<<1, 256>>>(
+                batch_size, ws.d_raw_src, ws.d_raw_dst, vid_bits,
+                ws.d_src_uniq, ws.d_dst_uniq, ws.d_unique_srcs,
+                ws.d_batch_deg, ws.d_batch_offsets, ws.d_scalar_count);
+            CUDA_CHECK(cudaGetLastError());
 
-        int sort_bits = std::min(64, 2 * vid_bits);
-        cub::DeviceRadixSort::SortKeys(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_in, ws.d_keys_sorted,
-            batch_size, 0, sort_bits);
-        cub::DeviceSelect::Unique(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_sorted, ws.d_keys_uniq,
-            ws.d_scalar_count, batch_size);
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                                  2 * sizeof(int), cudaMemcpyDeviceToHost));
+            uniq_count = ws.h_pinned_counts[0];
+            num_unique = ws.h_pinned_counts[1];
+        } else {
+            // DS-2: Tight Bit-Packing & Partial end_bit
+            pack_edges_kernel<<<(batch_size + blk - 1) / blk, blk>>>(
+                batch_size, ws.d_raw_src, ws.d_raw_dst, ws.d_keys_in, vid_bits);
+            CUDA_CHECK(cudaGetLastError());
 
-        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
-                              sizeof(int), cudaMemcpyDeviceToHost));
-        uniq_count = ws.h_pinned_counts[0];
-        if (uniq_count == 0) return;
+            int sort_bits = std::min(64, 2 * vid_bits);
+            cub::DeviceRadixSort::SortKeys(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_in, ws.d_keys_sorted,
+                batch_size, 0, sort_bits);
+            cub::DeviceSelect::Unique(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_keys_sorted, ws.d_keys_uniq,
+                ws.d_scalar_count, batch_size);
 
-        unpack_edges_kernel<<<(uniq_count + blk - 1) / blk, blk>>>(
-            uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq, vid_bits);
-        CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                                  sizeof(int), cudaMemcpyDeviceToHost));
+            uniq_count = ws.h_pinned_counts[0];
+            if (uniq_count == 0) return;
 
-        cub::DeviceRunLengthEncode::Encode(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs,
-            ws.d_batch_deg, ws.d_scalar_count, uniq_count);
+            unpack_edges_kernel<<<(uniq_count + blk - 1) / blk, blk>>>(
+                uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq, vid_bits);
+            CUDA_CHECK(cudaGetLastError());
 
-        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
-                              sizeof(int), cudaMemcpyDeviceToHost));
-        num_unique = ws.h_pinned_counts[0];
-        if (num_unique == 0) return;
+            cub::DeviceRunLengthEncode::Encode(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_src_uniq, ws.d_unique_srcs,
+                ws.d_batch_deg, ws.d_scalar_count, uniq_count);
 
-        CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
-        cub::DeviceScan::ExclusiveSum(
-            ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets,
-            num_unique + 1);
+            CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
+                                  sizeof(int), cudaMemcpyDeviceToHost));
+            num_unique = ws.h_pinned_counts[0];
+            if (num_unique == 0) return;
+
+            CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
+            cub::DeviceScan::ExclusiveSum(
+                ws.d_cub_temp, ws.cub_temp_bytes, ws.d_batch_deg, ws.d_batch_offsets,
+                num_unique + 1);
+        }
+
+        if (uniq_count == 0 || num_unique == 0) return;
 
         CUDA_CHECK(cudaMemsetAsync(ws.d_scalar_count, 0, sizeof(int)));
         gather_delete_graph_info_kernel<<<(num_unique + 1 + blk - 1) / blk, blk>>>(
