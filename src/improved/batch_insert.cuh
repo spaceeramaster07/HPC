@@ -610,6 +610,18 @@ inline void launch_huge_inplace_merge_chunk(HornetGraph& graph,
     }
 }
 
+inline void record_zero_insert_remaining_phases(bool record_build_realloc) {
+    if (!HornetProfiler::instance().is_enabled()) return;
+    if (record_build_realloc) {
+        HornetProfiler::instance().record_phase("insert_build_realloc", 0.0);
+    }
+    HornetProfiler::instance().record_phase("insert_host_alloc", 0.0);
+    HornetProfiler::instance().record_phase("insert_h2d_copy", 0.0);
+    HornetProfiler::instance().record_phase("insert_adj_move", 0.0);
+    HornetProfiler::instance().record_phase("insert_host_free", 0.0);
+    HornetProfiler::instance().record_phase("insert_append", 0.0);
+}
+
 inline void batch_insert(HornetGraph& graph,
                          BatchWorkspace& ws,
                          bool remove_graph_dups) {
@@ -617,6 +629,7 @@ inline void batch_insert(HornetGraph& graph,
     int batch_size = ws.batch_size;
     if (batch_size == 0) return;
 
+    const bool prof = HornetProfiler::instance().is_enabled();
     int blk = 256;
     int vid_bits = (graph.nV() > 1) ? hornet_common::ceil_log2(graph.nV()) : 1;
     if (vid_bits < 1) vid_bits = 1;
@@ -663,7 +676,10 @@ inline void batch_insert(HornetGraph& graph,
             CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
                                   sizeof(int), cudaMemcpyDeviceToHost));
             uniq_count = ws.h_pinned_counts[0];
-            if (uniq_count == 0) return;
+            if (uniq_count == 0) {
+                record_zero_insert_remaining_phases(true);
+                return;
+            }
 
             unpack_edges_kernel<<<(uniq_count + blk - 1) / blk, blk>>>(
                 uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq, vid_bits);
@@ -675,7 +691,10 @@ inline void batch_insert(HornetGraph& graph,
             CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
                                   sizeof(int), cudaMemcpyDeviceToHost));
             num_unique = ws.h_pinned_counts[0];
-            if (num_unique == 0) return;
+            if (num_unique == 0) {
+                record_zero_insert_remaining_phases(true);
+                return;
+            }
 
             CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
             cub::DeviceScan::ExclusiveSum(
@@ -683,7 +702,10 @@ inline void batch_insert(HornetGraph& graph,
                 num_unique + 1);
         }
 
-        if (uniq_count == 0 || num_unique == 0) return;
+        if (uniq_count == 0 || num_unique == 0) {
+            record_zero_insert_remaining_phases(true);
+            return;
+        }
 
         vid_t* d_final_src = ws.d_src_uniq;
         d_final_dst = ws.d_dst_uniq;
@@ -704,7 +726,10 @@ inline void batch_insert(HornetGraph& graph,
             CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
                                   sizeof(int), cudaMemcpyDeviceToHost));
             final_count = ws.h_pinned_counts[0];
-            if (final_count == 0) return;
+            if (final_count == 0) {
+                record_zero_insert_remaining_phases(true);
+                return;
+            }
 
             if (final_count < uniq_count) {
                 gather_selected_edges_kernel<<<(final_count + blk - 1) / blk, blk>>>(
@@ -730,7 +755,7 @@ inline void batch_insert(HornetGraph& graph,
     }
 
     // -------------------------------------------------------------------------
-    // Phase 2: Build Reallocation List & Classify In-Place Merge Buckets
+    // Phase 2-4: Build Realloc List, Pre-Check Deficit, GPU BitTree Allocation
     // -------------------------------------------------------------------------
     int num_realloc = 0;
     int num_small_inplace = 0;
@@ -740,7 +765,17 @@ inline void batch_insert(HornetGraph& graph,
     int num_large_realloc = 0;
 
     {
-        ScopedPhaseTimer realloc_timer("insert_build_realloc", true);
+        double build_realloc_ms = 0.0;
+        std::chrono::high_resolution_clock::time_point br_t0;
+        bool br_nvtx = false;
+        if (prof) {
+            if (HornetProfiler::instance().is_nvtx_enabled()) {
+                nvtxRangePushA("insert_build_realloc");
+                br_nvtx = true;
+            }
+            CUDA_CHECK(cudaDeviceSynchronize());
+            br_t0 = std::chrono::high_resolution_clock::now();
+        }
 
         CUDA_CHECK(cudaMemsetAsync(ws.d_scalar_count, 0, 3 * sizeof(int)));
         check_insert_realloc_kernel<<<(num_unique + blk - 1) / blk, blk>>>(
@@ -773,46 +808,39 @@ inline void batch_insert(HornetGraph& graph,
                 &ws.d_scalar_count[4], &ws.d_scalar_count[5]);
             CUDA_CHECK(cudaGetLastError());
 
-            // DS-2: Copy to persistent pinned host buffers
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_v, ws.d_realloc_v,
-                                  num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_deg, ws.d_realloc_old_deg,
-                                  num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_new_deg, ws.d_realloc_new_deg,
-                                  num_realloc * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_ptr, ws.d_realloc_old_ptr,
-                                  num_realloc * sizeof(vid_t*), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(&ws.h_pinned_counts[4], &ws.d_scalar_count[4],
-                                  2 * sizeof(int), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpyAsync(&ws.h_pinned_counts[4], &ws.d_scalar_count[4],
+                                       2 * sizeof(int), cudaMemcpyDeviceToHost, 0));
+
+            // DS-7: GPU bin-grouped pre-check, optional fallback, and GPU BitTree allocation
+            ds7_gpu_allocate_blocks(
+                graph.memory_manager(), ws.ds7_alloc_view(),
+                num_realloc, ws.d_realloc_new_deg, ws.d_realloc_new_ptr,
+                prof, "insert_gpu_alloc", "insert_host_alloc", "insert_h2d_copy",
+                &br_t0, &br_nvtx, &build_realloc_ms);
+
             num_small_realloc = ws.h_pinned_counts[4];
             num_large_realloc = ws.h_pinned_counts[5];
+        } else if (prof) {
+            HornetProfiler::instance().record_phase("insert_host_alloc", 0.0);
+            HornetProfiler::instance().record_phase("insert_h2d_copy", 0.0);
+            HornetProfiler::instance().record_phase("insert_adj_move", 0.0);
+            HornetProfiler::instance().record_phase("insert_host_free", 0.0);
+        }
+
+        if (prof) {
+            if (br_nvtx) {
+                cudaDeviceSynchronize();
+                auto br_t1 = std::chrono::high_resolution_clock::now();
+                build_realloc_ms += std::chrono::duration<double, std::milli>(br_t1 - br_t0).count();
+                nvtxRangePop();
+            }
+            HornetProfiler::instance().record_phase("insert_build_realloc", build_realloc_ms);
         }
     }
 
     if (num_realloc > 0) {
         // ---------------------------------------------------------------------
-        // Phase 3: Host Block Allocation via B+Tree & VecTree
-        // ---------------------------------------------------------------------
-        {
-            ScopedPhaseTimer alloc_timer("insert_host_alloc", false);
-            auto& mgr = graph.memory_manager();
-            for (int r = 0; r < num_realloc; ++r) {
-                int log_b = hornet_common::ceil_log2(ws.h_realloc_new_deg[r]);
-                ws.h_realloc_new_ptr[r] = mgr.allocate_block(log_b, false).ptr;
-            }
-        }
-
-        // ---------------------------------------------------------------------
-        // Phase 4: Copy New Pointers Host -> Device
-        // ---------------------------------------------------------------------
-        {
-            ScopedPhaseTimer h2d_timer("insert_h2d_copy", true);
-            CUDA_CHECK(cudaMemcpy(ws.d_realloc_new_ptr, ws.h_realloc_new_ptr,
-                                  num_realloc * sizeof(vid_t*), cudaMemcpyHostToDevice));
-        }
-
-        // ---------------------------------------------------------------------
-        // Phase 5: DS-5 Parallel Merge on Reallocated Adjacency Lists
+        // Phase 5-6: DS-5 Parallel Merge + Separate DS-7 GPU Block Reclamation
         // ---------------------------------------------------------------------
         {
             ScopedPhaseTimer move_timer("insert_adj_move", true);
@@ -857,20 +885,20 @@ inline void batch_insert(HornetGraph& graph,
                     CUDA_CHECK(cudaGetLastError());
                 }
             }
+
+            // Separate GPU reclamation phase after move/merge kernels complete
+            if (prof && HornetProfiler::instance().is_nvtx_enabled()) {
+                nvtxRangePushA("insert_gpu_reclaim");
+            }
+            ds7_gpu_reclaim_blocks(
+                graph.memory_manager(), num_realloc, ws.d_realloc_old_deg, ws.d_realloc_old_ptr);
+            if (prof && HornetProfiler::instance().is_nvtx_enabled()) {
+                nvtxRangePop();
+            }
         }
 
-        // ---------------------------------------------------------------------
-        // Phase 6: Host Block Reclamation via B+Tree & VecTree
-        // ---------------------------------------------------------------------
-        {
-            ScopedPhaseTimer free_timer("insert_host_free", false);
-            auto& mgr = graph.memory_manager();
-            for (int r = 0; r < num_realloc; ++r) {
-                if (ws.h_realloc_old_deg[r] > 0 && ws.h_realloc_old_ptr[r] != nullptr) {
-                    int old_log_b = hornet_common::ceil_log2(ws.h_realloc_old_deg[r]);
-                    mgr.reclaim_block(ws.h_realloc_old_ptr[r], old_log_b);
-                }
-            }
+        if (prof) {
+            HornetProfiler::instance().record_phase("insert_host_free", 0.0);
         }
     }
 
@@ -948,6 +976,8 @@ inline void batch_insert(HornetGraph& graph,
                 }
             }
         }
+    } else if (prof) {
+        HornetProfiler::instance().record_phase("insert_append", 0.0);
     }
 }
 

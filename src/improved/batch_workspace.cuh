@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu_allocator.cuh"
 #include "hornet_graph.cuh"
 #include "types.cuh"
 
@@ -414,21 +415,19 @@ struct BatchWorkspace {
     vid_t** d_realloc_new_ptr = nullptr;
     eoff_t* d_move_offsets = nullptr;
 
+    // DS-7: GPU BitTree Allocator buffers
+    SlabAllocTask* d_slab_tasks = nullptr;
+    int* d_huge_chunk_counts = nullptr;
+    size_t huge_chunk_counts_capacity = 0;
+    int* d_ds7_meta = nullptr; // [160]: needed[32], offsets[33], cursor[32], deficit[32], alloc_counts[4]
+
     // DS-2: 1-Pass Flagged index buffer
     int* d_selected_idx = nullptr;
     int* d_scalar_count = nullptr;
     void* d_cub_temp = nullptr;
     size_t cub_temp_bytes = 0;
 
-    // DS-2: Persistent pinned host buffers for zero-realloc metadata transfers
-    int host_capacity = 0;
-    vid_t* h_realloc_v = nullptr;
-    vid_t* h_realloc_old_deg = nullptr;
-    vid_t* h_realloc_new_deg = nullptr;
-    vid_t** h_realloc_old_ptr = nullptr;
-    vid_t** h_realloc_new_ptr = nullptr;
-    vid_t* h_free_deg = nullptr;
-    vid_t** h_free_ptr = nullptr;
+    // Persistent pinned host scalar buffer (counts + 32-int bin deficit check)
     int* h_pinned_counts = nullptr;
 
     static_assert(sizeof(int) == 4 && sizeof(vid_t) == 4 && sizeof(eoff_t) == 4,
@@ -444,6 +443,24 @@ struct BatchWorkspace {
     vid_t* huge_old_deg_buf() const { return reinterpret_cast<vid_t*>(d_keys_in); }
     eoff_t* tile_counts_buf() const { return reinterpret_cast<eoff_t*>(d_keys_sorted); }
     eoff_t* hub_chunks_per_hub_buf() const { return reinterpret_cast<eoff_t*>(d_keys_uniq); }
+
+    DS7AllocWorkspaceView ds7_alloc_view() const {
+        DS7AllocWorkspaceView v;
+        v.d_req_bin = d_keep;
+        v.d_bucket_req_idx = reinterpret_cast<int*>(d_raw_src);
+        v.d_single_task_idx = reinterpret_cast<int*>(d_raw_dst);
+        v.d_med_task_idx = reinterpret_cast<int*>(d_src_uniq);
+        v.d_huge_task_idx = reinterpret_cast<int*>(d_filt_src);
+        v.d_slab_tasks = d_slab_tasks;
+        v.d_huge_chunk_counts = d_huge_chunk_counts;
+        v.d_bin_needed = d_ds7_meta;
+        v.d_bin_offsets = d_ds7_meta + 32;
+        v.d_bin_cursor = d_ds7_meta + 65;
+        v.d_bin_deficit = d_ds7_meta + 97;
+        v.d_alloc_counts = d_ds7_meta + 129;
+        v.h_pinned_counts = h_pinned_counts;
+        return v;
+    }
 
     ~BatchWorkspace() { free_all(); }
 
@@ -478,17 +495,13 @@ struct BatchWorkspace {
         if (d_realloc_old_ptr) cudaFree(d_realloc_old_ptr);
         if (d_realloc_new_ptr) cudaFree(d_realloc_new_ptr);
         if (d_move_offsets) cudaFree(d_move_offsets);
+        if (d_slab_tasks) cudaFree(d_slab_tasks);
+        if (d_huge_chunk_counts) cudaFree(d_huge_chunk_counts);
+        if (d_ds7_meta) cudaFree(d_ds7_meta);
         if (d_selected_idx) cudaFree(d_selected_idx);
         if (d_scalar_count) cudaFree(d_scalar_count);
         if (d_cub_temp) cudaFree(d_cub_temp);
 
-        if (h_realloc_v) cudaFreeHost(h_realloc_v);
-        if (h_realloc_old_deg) cudaFreeHost(h_realloc_old_deg);
-        if (h_realloc_new_deg) cudaFreeHost(h_realloc_new_deg);
-        if (h_realloc_old_ptr) cudaFreeHost(h_realloc_old_ptr);
-        if (h_realloc_new_ptr) cudaFreeHost(h_realloc_new_ptr);
-        if (h_free_deg) cudaFreeHost(h_free_deg);
-        if (h_free_ptr) cudaFreeHost(h_free_ptr);
         if (h_pinned_counts) cudaFreeHost(h_pinned_counts);
 
         d_raw_src = d_raw_dst = d_src_uniq = d_dst_uniq = nullptr;
@@ -502,21 +515,20 @@ struct BatchWorkspace {
         d_batch_offsets = d_graph_deg = d_graph_offsets = d_move_offsets = nullptr;
         d_all_old_deg = d_all_new_deg = d_realloc_v = d_realloc_old_deg = d_realloc_new_deg = nullptr;
         d_all_old_ptr = d_realloc_old_ptr = d_realloc_new_ptr = nullptr;
+        d_slab_tasks = nullptr;
+        d_huge_chunk_counts = nullptr;
+        d_ds7_meta = nullptr;
         d_selected_idx = nullptr;
         d_scalar_count = nullptr;
         d_cub_temp = nullptr;
 
-        h_realloc_v = h_realloc_old_deg = h_realloc_new_deg = nullptr;
-        h_realloc_old_ptr = h_realloc_new_ptr = nullptr;
-        h_free_deg = nullptr;
-        h_free_ptr = nullptr;
         h_pinned_counts = nullptr;
 
         capacity = 0;
-        host_capacity = 0;
         del_keep_capacity = 0;
         merge_scratch_capacity = 0;
         hub_chunk_capacity = 0;
+        huge_chunk_counts_capacity = 0;
         cub_temp_bytes = 0;
     }
 
@@ -606,19 +618,15 @@ struct BatchWorkspace {
         CUDA_CHECK(cudaMalloc(&d_realloc_old_ptr, capacity * sizeof(vid_t*)));
         CUDA_CHECK(cudaMalloc(&d_realloc_new_ptr, capacity * sizeof(vid_t*)));
         CUDA_CHECK(cudaMalloc(&d_move_offsets, (capacity + 1) * sizeof(eoff_t)));
+        CUDA_CHECK(cudaMalloc(&d_slab_tasks, capacity * sizeof(SlabAllocTask)));
+        huge_chunk_counts_capacity = 32ULL * (static_cast<size_t>(capacity) / 4096ULL + 32ULL);
+        CUDA_CHECK(cudaMalloc(&d_huge_chunk_counts, huge_chunk_counts_capacity * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_ds7_meta, 160 * sizeof(int)));
         CUDA_CHECK(cudaMalloc(&d_selected_idx, capacity * sizeof(int)));
         CUDA_CHECK(cudaMalloc(&d_scalar_count, 8 * sizeof(int)));
 
-        // Persistent pinned host buffers for host-side metadata processing
-        CUDA_CHECK(cudaMallocHost(&h_realloc_v, capacity * sizeof(vid_t)));
-        CUDA_CHECK(cudaMallocHost(&h_realloc_old_deg, (capacity + 1) * sizeof(vid_t)));
-        CUDA_CHECK(cudaMallocHost(&h_realloc_new_deg, (capacity + 1) * sizeof(vid_t)));
-        CUDA_CHECK(cudaMallocHost(&h_realloc_old_ptr, capacity * sizeof(vid_t*)));
-        CUDA_CHECK(cudaMallocHost(&h_realloc_new_ptr, capacity * sizeof(vid_t*)));
-        CUDA_CHECK(cudaMallocHost(&h_free_deg, capacity * sizeof(vid_t)));
-        CUDA_CHECK(cudaMallocHost(&h_free_ptr, capacity * sizeof(vid_t*)));
-        CUDA_CHECK(cudaMallocHost(&h_pinned_counts, 8 * sizeof(int)));
-        host_capacity = capacity;
+        // Persistent pinned scalar buffer (counts + 32-int bin deficit check)
+        CUDA_CHECK(cudaMallocHost(&h_pinned_counts, 64 * sizeof(int)));
 
         // Pre-compute max CUB temporary storage needed across all operations
         size_t req = 0, tmp = 0;

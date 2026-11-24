@@ -16,10 +16,33 @@ namespace improved {
 using namespace hornet_common;
 
 /**
- * @brief Physical BlockArray (Paper Section III-A, Fig. 1).
+ * @brief DS-1 mempool-backed async device allocation helper with OOM trim retry.
+ */
+inline void cuda_malloc_async_with_pool(void** ptr, size_t bytes, cudaStream_t stream = 0) {
+    static std::once_flag mempool_configured;
+    int dev = 0;
+    CUDA_CHECK(cudaGetDevice(&dev));
+    cudaMemPool_t pool;
+    CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool, dev));
+    std::call_once(mempool_configured, [&pool]() {
+        uint64_t threshold = 256ULL << 20;
+        CUDA_CHECK(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold));
+    });
+
+    cudaError_t alloc_result = cudaMallocAsync(ptr, bytes, stream);
+    if (alloc_result == cudaErrorMemoryAllocation) {
+        CUDA_CHECK(cudaMemPoolTrimTo(pool, 0));
+        alloc_result = cudaMallocAsync(ptr, bytes, stream);
+    }
+    CUDA_CHECK(alloc_result);
+}
+
+/**
+ * @brief Physical BlockArray (Paper Section III-A, Fig. 1) + DS-7 GPU BitTree.
  *
  * Contiguous GPU slab of `num_blocks` equal-sized blocks of `2^log_bsize` edges.
- * Uses standard cudaMalloc/cudaFree and a host-side BitTree (Vec-Tree).
+ * Uses stream-ordered cudaMallocAsync/cudaFreeAsync (256 MiB mempool) and
+ * mirrors its BitTree (Vec-Tree) into GPU VRAM (`d_bittree_`).
  */
 class BlockArray {
 public:
@@ -29,27 +52,17 @@ public:
           num_blocks_(static_cast<int>(std::max<size_t>(1, max_edges_per_ba / (1ULL << log_bsize)))),
           total_edges_(static_cast<size_t>(num_blocks_) * block_size_),
           bit_tree_(num_blocks_) {
-        static std::once_flag mempool_configured;
-        int dev = 0;
-        CUDA_CHECK(cudaGetDevice(&dev));
-        cudaMemPool_t pool;
-        CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool, dev));
-        std::call_once(mempool_configured, [&pool]() {
-            uint64_t threshold = 256ULL << 20;
-            CUDA_CHECK(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold));
-        });
-
-        cudaError_t alloc_result = cudaMallocAsync(
+        cuda_malloc_async_with_pool(
             reinterpret_cast<void**>(&d_edges_), total_edges_ * sizeof(vid_t), 0);
-        if (alloc_result == cudaErrorMemoryAllocation) {
-            CUDA_CHECK(cudaMemPoolTrimTo(pool, 0));
-            alloc_result = cudaMallocAsync(
-                reinterpret_cast<void**>(&d_edges_), total_edges_ * sizeof(vid_t), 0);
-        }
-        CUDA_CHECK(alloc_result);
+        cuda_malloc_async_with_pool(
+            reinterpret_cast<void**>(&d_bittree_), bit_tree_.total_bytes(), 0);
     }
 
     ~BlockArray() {
+        if (d_bittree_) {
+            cudaFreeAsync(d_bittree_, 0);
+            d_bittree_ = nullptr;
+        }
         if (d_edges_) {
             cudaFreeAsync(d_edges_, 0);
             d_edges_ = nullptr;
@@ -83,6 +96,16 @@ public:
         }
     }
 
+    void upload_bittree_to_device(cudaStream_t stream = 0) const {
+        if (!d_bittree_ || bit_tree_.total_bytes() == 0) return;
+        if (bit_tree_.free_count() == 0) {
+            CUDA_CHECK(cudaMemsetAsync(d_bittree_, 0, bit_tree_.total_bytes(), stream));
+        } else {
+            CUDA_CHECK(cudaMemcpyAsync(d_bittree_, bit_tree_.words_data(),
+                                       bit_tree_.total_bytes(), cudaMemcpyHostToDevice, stream));
+        }
+    }
+
     bool has_free() const { return bit_tree_.has_free(); }
     int free_count() const { return bit_tree_.free_count(); }
     int num_blocks() const { return num_blocks_; }
@@ -93,6 +116,8 @@ public:
     size_t total_edges() const { return total_edges_; }
     size_t total_bytes() const { return total_edges_ * sizeof(vid_t); }
     vid_t* device_base() const { return d_edges_; }
+    uint64_t* device_bittree() const { return d_bittree_; }
+    const BitTree& bit_tree() const { return bit_tree_; }
     vid_t* ptr_of_block(int block_idx) const {
         return d_edges_ + static_cast<size_t>(block_idx) * block_size_;
     }
@@ -122,6 +147,7 @@ private:
     size_t total_edges_;
     BitTree bit_tree_;
     vid_t* d_edges_ = nullptr;
+    uint64_t* d_bittree_ = nullptr;
     std::unique_ptr<vid_t[]> h_staging_;
     size_t staged_edges_ = 0;
 };
