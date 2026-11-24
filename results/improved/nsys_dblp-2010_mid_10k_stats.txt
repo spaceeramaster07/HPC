@@ -1,17 +1,17 @@
-dblp-2010,10000,0,insert_total,2.2725,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_host_free,0.2570,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_h2d_copy,0.0672,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_append,0.0672,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_host_alloc,0.2774,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_adj_move,0.2098,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_build_realloc,0.2531,42,--graph-dedup,baseline_btree
-dblp-2010,10000,0,insert_preprocess,1.0885,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_total,1.8979,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_host_free,0.1904,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_h2d_copy,0.0605,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_append,0.0404,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_host_alloc,0.2034,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_adj_move,0.0504,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_build_realloc,0.4490,42,--graph-dedup,baseline_btree
+dblp-2010,10000,0,insert_preprocess,0.8748,42,--graph-dedup,baseline_btree
 Collecting data...
-Generating '/tmp/nsys-report-35ee.qdstrm'
+Generating '/tmp/nsys-report-27a1.qdstrm'
 
 [1/7] [0%                          ] nsys_dblp-2010_mid_10k.nsys-rep
 [1/7] [0%                          ] nsys_dblp-2010_mid_10k.nsys-rep
-[1/7] [=========43%                ] nsys_dblp-2010_mid_10k.nsys-rep
+[1/7] [=========44%                ] nsys_dblp-2010_mid_10k.nsys-rep
 [1/7] [===========51%              ] nsys_dblp-2010_mid_10k.nsys-rep
 [1/7] [===========52%              ] nsys_dblp-2010_mid_10k.nsys-rep
 [1/7] [============55%             ] nsys_dblp-2010_mid_10k.nsys-rep
@@ -128,83 +128,80 @@ Generating '/tmp/nsys-report-35ee.qdstrm'
 
  Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)   Style                    Range                 
  --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  -------  ---------------------------------------
-     44.9         59679696          2  29839848.0  29839848.0   7261656  52418040   31930385.3  PushPop  :init_total                            
-     37.3         49582599          2  24791299.5  24791299.5   3117770  46464829   30650999.4  PushPop  :init_vertex_loop                      
-      5.5          7317744          2   3658872.0   3658872.0   2266912   5050832    1968528.7  PushPop  :insert_total                          
-      4.9          6497146          2   3248573.0   3248573.0   2935368   3561778     442938.8  PushPop  :init_device_copy_loop                 
-      3.3          4323412          2   2161706.0   2161706.0   1091110   3232302    1514051.4  PushPop  :insert_preprocess                     
-      1.3          1792034          2    896017.0    896017.0    368152   1423882     746513.8  PushPop  CCCL:cub::DeviceRadixSort              
-      0.8          1020649          2    510324.5    510324.5     75767    944882     614557.1  PushPop  :insert_h2d_copy                       
-      0.4           475398          2    237699.0    237699.0    196441    278957      58347.6  PushPop  :insert_host_alloc                     
-      0.4           471308          2    235654.0    235654.0    215035    256273      29159.7  PushPop  :insert_build_realloc                  
-      0.3           446717          2    223358.5    223358.5    187977    258740      50037.0  PushPop  :insert_host_free                      
-      0.3           416149          2    208074.5    208074.5    203491    212658       6482.0  PushPop  :insert_adj_move                       
-      0.2           291083          6     48513.8     55403.5     18052     69880      22039.8  PushPop  CCCL:cub::DeviceScan::ExclusiveSum     
-      0.1           170287          4     42571.8     48679.0     18002     54927      16644.2  PushPop  CCCL:cub::DeviceSelect::Flagged        
-      0.1           169194          2     84597.0     84597.0     53834    115360      43505.5  PushPop  CCCL:cub::DeviceRunLengthEncode::Encode
-      0.1           147523          2     73761.5     73761.5     63622     83901      14339.4  PushPop  CCCL:cub::DeviceSelect::Unique         
-      0.1           132218          2     66109.0     66109.0     58547     73671      10694.3  PushPop  :insert_append                         
+     46.0         54748196          2  27374098.0  27374098.0   6716253  48031943   29214604.6  PushPop  :init_total                            
+     38.0         45251604          2  22625802.0  22625802.0   3074187  42177417   27650159.1  PushPop  :init_vertex_loop                      
+      4.9          5875967          2   2937983.5   2937983.5   2463371   3412596     671203.4  PushPop  :init_device_copy_loop                 
+      4.6          5474299          2   2737149.5   2737149.5   1894091   3580208    1192264.8  PushPop  :insert_total                          
+      2.9          3510318          2   1755159.0   1755159.0    876590   2633728    1242484.2  PushPop  :insert_preprocess                     
+      1.4          1710823          2    855411.5    855411.5    388662   1322161     660083.5  PushPop  CCCL:cub::DeviceRadixSort              
+      0.6           727969          2    363984.5    363984.5    276640    451329     123523.8  PushPop  :insert_build_realloc                  
+      0.3           408659          2    204329.5    204329.5    204189    204470        198.7  PushPop  :insert_host_alloc                     
+      0.3           380738          2    190369.0    190369.0    189793    190945        814.6  PushPop  :insert_host_free                      
+      0.2           194496          2     97248.0     97248.0     42319    152177      77681.3  PushPop  :insert_append                         
+      0.1           167783          4     41945.8     50343.5     15309     51787      17793.6  PushPop  CCCL:cub::DeviceSelect::Flagged        
+      0.1           144449          2     72224.5     72224.5     62426     82023      13857.2  PushPop  CCCL:cub::DeviceScan::ExclusiveSum     
+      0.1           139129          2     69564.5     69564.5     57527     81602      17023.6  PushPop  CCCL:cub::DeviceRunLengthEncode::Encode
+      0.1           119852          2     59926.0     59926.0     54301     65551       7955.0  PushPop  CCCL:cub::DeviceSelect::Unique         
+      0.1           114993          2     57496.5     57496.5     52357     62636       7268.4  PushPop  :insert_adj_move                       
+      0.1           110545          2     55272.5     55272.5     47378     63167      11164.5  PushPop  :insert_h2d_copy                       
 
 [4/7] Executing 'cuda_api_sum' stats report
 
  Time (%)  Total Time (ns)  Num Calls  Avg (ns)   Med (ns)  Min (ns)  Max (ns)   StdDev (ns)             Name            
  --------  ---------------  ---------  ---------  --------  --------  ---------  -----------  ---------------------------
-     78.5        129119890         33  3912723.9    2016.0      1524  127735024   22228535.4  cudaMalloc                 
-     10.7         17523097         18   973505.4  294963.5      1695   14192575    3304188.1  cudaMallocAsync            
-      5.1          8311942         48   173165.5   64530.0     17620    1329040     241896.0  cudaMemcpy                 
-      1.4          2346407         62    37845.3   22655.0      5656     858431     107013.1  cudaLaunchKernel           
-      1.3          2070571         33    62744.6    2066.0      1465     736617     162635.5  cudaFree                   
-      1.0          1565626          8   195703.3    3068.5      1965    1535041     541184.7  cudaHostAlloc              
-      0.6          1028443         36    28567.9    2542.5       622     304231      68262.4  cudaDeviceSynchronize      
-      0.4           721901          8    90237.6    3219.5      2366     687543     241384.5  cudaFreeHost               
-      0.4           692437         20    34621.8   12656.0      3600     330194      71964.9  cudaMemsetAsync            
-      0.4           680712          1   680712.0  680712.0    680712     680712          0.0  cudaMemPoolSetAttribute    
-      0.2           284171         18    15787.3     747.5       371     266241      62512.1  cudaDeviceGetDefaultMemPool
-      0.0            37405         18     2078.1    1278.5       952       8013       2068.8  cudaFreeAsync              
-      0.0            21912         62      353.4     281.0        91       1635        269.1  cuKernelGetName            
-      0.0            14380         18      798.9     727.0       291       2718        559.1  cuLibraryGetKernel         
-      0.0             3260          1     3260.0    3260.0      3260       3260          0.0  cuModuleGetLoadingMode     
+     79.3        122231000         33  3703969.7    1803.0      1273  120852166   21030432.8  cudaMalloc                 
+     10.9         16814389         18   934132.7  287582.0      1834   13956099    3253535.4  cudaMallocAsync            
+      4.3          6649770         46   144560.2   65093.5     15419    1623939     248754.6  cudaMemcpy                 
+      1.2          1828165         48    38086.8   22216.0      4919     619531      87837.3  cudaLaunchKernel           
+      1.2          1811685         33    54899.5    2014.0      1392     727694     150169.4  cudaFree                   
+      1.0          1566843          8   195855.4    3381.0      1683    1539443     542898.9  cudaHostAlloc              
+      0.6           928387          1   928387.0  928387.0    928387     928387          0.0  cudaMemPoolSetAttribute    
+      0.6           919905         36    25552.9    1713.0       681     302984      64271.4  cudaDeviceSynchronize      
+      0.4           606177          8    75772.1    2374.5      1733     584577     205598.3  cudaFreeHost               
+      0.4           543547         20    27177.3   15739.5      3426     217762      48729.1  cudaMemsetAsync            
+      0.1           166939         18     9274.4     737.0       300     149919      35114.3  cudaDeviceGetDefaultMemPool
+      0.0            34276         18     1904.2    1177.5       842       8115       1975.1  cudaFreeAsync              
+      0.0            24206         15     1613.7     771.0       441      11802       2859.3  cuLibraryGetKernel         
+      0.0            19363         48      403.4     390.5        90       1353        257.6  cuKernelGetName            
+      0.0             3967          1     3967.0    3967.0      3967       3967          0.0  cuModuleGetLoadingMode     
 
 [5/7] Executing 'cuda_gpu_kern_sum' stats report
 
  Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)                                                  Name                                                
  --------  ---------------  ---------  --------  --------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
-     30.0            42347         10    4234.7    4244.0      4100      4389         85.4  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortOnesweepKernel<cub::_V_300304_SM_750…
-     10.4            14734          2    7367.0    7367.0      7335      7399         45.3  improved::check_cross_dups_lb_kernel(int, const int *, int, const int *, const int *, const int *, …
-      8.3            11755          6    1959.2    1986.0      1858      2050         71.5  void cub::_V_300304_SM_750::detail::scan::DeviceScanKernel<cub::_V_300304_SM_750::detail::scan::pol…
-      7.4            10474          2    5237.0    5237.0      5221      5253         22.6  improved::append_batch_edges_lb_kernel(int, const int *, int, const int *, const int *, const int *…
-      6.1             8618          2    4309.0    4309.0      4293      4325         22.6  improved::adj_move_balanced_kernel(int, const int *, int, const int *, int *const *, int *const *, …
-      6.0             8425          4    2106.3    2130.5      1890      2274        172.3  void cub::_V_300304_SM_750::detail::select::DeviceSelectSweepKernel<cub::_V_300304_SM_750::detail::…
-      3.9             5446          2    2723.0    2723.0      2723      2723          0.0  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortHistogramKernel<cub::_V_300304_SM_75…
-      3.5             4965          6     827.5     833.0       801       833         13.0  void cub::_V_300304_SM_750::detail::scan::DeviceScanInitKernel<cub::_V_300304_SM_750::ScanTileState…
-      3.5             4899          6     816.5     816.5       800       833         17.4  void cub::_V_300304_SM_750::detail::scan::DeviceCompactInitKernel<cub::_V_300304_SM_750::ScanTileSt…
-      3.3             4644          2    2322.0    2322.0      2242      2402        113.1  void cub::_V_300304_SM_750::detail::select::DeviceSelectSweepKernel<cub::_V_300304_SM_750::detail::…
-      3.2             4548          2    2274.0    2274.0      2210      2338         90.5  void cub::_V_300304_SM_750::detail::reduce::DeviceReduceByKeyKernel<cub::_V_300304_SM_750::detail::…
-      2.1             3011          2    1505.5    1505.5      1505      1506          0.7  improved::check_insert_realloc_kernel(int, const int *, const int *, const int *, int *const *, uns…
-      1.7             2466          2    1233.0    1233.0      1217      1249         22.6  improved::gather_insert_graph_deg_kernel(int, const int *, const int *, int *)                      
-      1.7             2403          2    1201.5    1201.5      1185      1218         23.3  improved::gather_realloc_metadata_kernel(int, const int *, const int *, const int *, const int *, i…
-      1.6             2274          2    1137.0    1137.0      1025      1249        158.4  improved::pack_edges_kernel(int, const int *, const int *, unsigned long *, int)                    
-      1.6             2210          2    1105.0    1105.0      1089      1121         22.6  improved::update_zero_deg_ptrs_kernel(int, const int *, const int *, int *const *, int **)          
-      1.5             2178          2    1089.0    1089.0      1057      1121         45.3  improved::gather_selected_edges_kernel(int, const int *, const int *, const int *, int *, int *)    
-      1.5             2114          2    1057.0    1057.0      1057      1057          0.0  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortExclusiveSumKernel<cub::_V_300304_SM…
-      1.4             1986          2     993.0     993.0       993       993          0.0  improved::unpack_edges_kernel(int, const unsigned long *, int *, int *, int)                        
-      1.2             1666          2     833.0     833.0       833       833          0.0  void cub::_V_300304_SM_750::detail::scan::DeviceCompactInitKernel<cub::_V_300304_SM_750::ReduceByKe…
+     33.1            42335         10    4233.5    4224.0      4096      4384         88.1  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortOnesweepKernel<cub::_V_300304_SM_750…
+     14.1            18079          2    9039.5    9039.5      8800      9279        338.7  improved::merge_realloc_warp_kernel(int, const int *, const int *, const int *, const int *, int *c…
+     11.2            14304          2    7152.0    7152.0      7008      7296        203.6  improved::merge_inplace_warp_kernel(int, const int *, const int *, const int *, const int *, int *c…
+      6.6             8448          4    2112.0    2128.0      1920      2272        158.9  void cub::_V_300304_SM_750::detail::select::DeviceSelectSweepKernel<cub::_V_300304_SM_750::detail::…
+      4.3             5440          2    2720.0    2720.0      2720      2720          0.0  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortHistogramKernel<cub::_V_300304_SM_75…
+      3.9             4992          2    2496.0    2496.0      2464      2528         45.3  improved::check_cross_dups_sorted_kernel(int, const int *, const int *, const int *, int *const *, …
+      3.9             4928          6     821.3     832.0       800       832         16.5  void cub::_V_300304_SM_750::detail::scan::DeviceCompactInitKernel<cub::_V_300304_SM_750::ScanTileSt…
+      3.6             4544          2    2272.0    2272.0      2208      2336         90.5  void cub::_V_300304_SM_750::detail::reduce::DeviceReduceByKeyKernel<cub::_V_300304_SM_750::detail::…
+      3.5             4512          2    2256.0    2256.0      2208      2304         67.9  void cub::_V_300304_SM_750::detail::select::DeviceSelectSweepKernel<cub::_V_300304_SM_750::detail::…
+      3.2             4064          2    2032.0    2032.0      2016      2048         22.6  void cub::_V_300304_SM_750::detail::scan::DeviceScanKernel<cub::_V_300304_SM_750::detail::scan::pol…
+      2.8             3616          2    1808.0    1808.0      1792      1824         22.6  improved::check_insert_realloc_kernel(int, const int *, const int *, const int *, int *const *, uns…
+      2.3             2880          2    1440.0    1440.0      1440      1440          0.0  improved::gather_insert_realloc_metadata_kernel(int, const int *, const int *, const int *, const i…
+      1.8             2304          2    1152.0    1152.0      1024      1280        181.0  improved::pack_edges_kernel(int, const int *, const int *, unsigned long *, int)                    
+      1.7             2112          2    1056.0    1056.0      1056      1056          0.0  void cub::_V_300304_SM_750::detail::radix_sort::DeviceRadixSortExclusiveSumKernel<cub::_V_300304_SM…
+      1.6             1984          2     992.0     992.0       992       992          0.0  improved::unpack_edges_kernel(int, const unsigned long *, int *, int *, int)                        
+      1.3             1664          2     832.0     832.0       832       832          0.0  void cub::_V_300304_SM_750::detail::scan::DeviceCompactInitKernel<cub::_V_300304_SM_750::ReduceByKe…
+      1.3             1632          2     816.0     816.0       800       832         22.6  void cub::_V_300304_SM_750::detail::scan::DeviceScanInitKernel<cub::_V_300304_SM_750::ScanTileState…
 
 [6/7] Executing 'cuda_gpu_mem_time_sum' stats report
 
  Time (%)  Total Time (ns)  Count  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)           Operation          
  --------  ---------------  -----  --------  --------  --------  --------  -----------  ----------------------------
-     97.5          2266112     28   80932.6   58731.0      3876    350688      84853.1  [CUDA memcpy Host-to-Device]
-      1.9            43792     20    2189.6    1874.0       929      4132        996.0  [CUDA memcpy Device-to-Host]
-      0.6            13998     20     699.9     769.0       288      1377        305.5  [CUDA memset]               
+     97.5          2039107     28   72825.3   60591.0      3808    210557      65337.3  [CUDA memcpy Host-to-Device]
+      1.9            40192     18    2232.9    2064.0       960      4128       1029.3  [CUDA memcpy Device-to-Host]
+      0.6            13119     20     656.0     768.0       288      1312        336.1  [CUDA memset]               
 
 [7/7] Executing 'cuda_gpu_mem_size_sum' stats report
 
  Total (MB)  Count  Avg (MB)  Med (MB)  Min (MB)  Max (MB)  StdDev (MB)           Operation          
  ----------  -----  --------  --------  --------  --------  -----------  ----------------------------
      25.108     28     0.897     0.754     0.040     2.609        0.816  [CUDA memcpy Host-to-Device]
-      0.230     20     0.011     0.000     0.000     0.046        0.016  [CUDA memcpy Device-to-Host]
-      0.071     20     0.004     0.004     0.000     0.010        0.003  [CUDA memset]               
+      0.230     18     0.013     0.000     0.000     0.046        0.016  [CUDA memcpy Device-to-Host]
+      0.051     20     0.003     0.004     0.000     0.005        0.002  [CUDA memset]               
 
 Generated:
 	/home/spaceeramaster/HPCproj_backup/results/improved/nsys_dblp-2010_mid_10k.nsys-rep
