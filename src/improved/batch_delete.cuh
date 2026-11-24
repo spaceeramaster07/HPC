@@ -88,7 +88,8 @@ __device__ __forceinline__ void finalize_delete_vertex_meta(int i,
                                                             vid_t** __restrict__ d_ptr,
                                                             uint8_t* __restrict__ need_shrink,
                                                             uint8_t* __restrict__ need_free_only,
-                                                            vid_t* __restrict__ all_new_deg) {
+                                                            vid_t* __restrict__ all_new_deg,
+                                                            int* __restrict__ any_free_only) {
     all_new_deg[i] = new_deg;
     d_used[v] = new_deg;
 
@@ -97,6 +98,7 @@ __device__ __forceinline__ void finalize_delete_vertex_meta(int i,
         d_ptr[v] = nullptr;
         need_free_only[i] = 1;
         need_shrink[i] = 0;
+        *any_free_only = 1;
     } else if (new_deg < old_cap / 2) {
         need_free_only[i] = 0;
         need_shrink[i] = 1;
@@ -191,7 +193,8 @@ __global__ void delete_compact_warp_kernel(int num_unique,
                                            vid_t** __restrict__ d_ptr,
                                            uint8_t* __restrict__ need_shrink,
                                            uint8_t* __restrict__ need_free_only,
-                                           vid_t* __restrict__ all_new_deg) {
+                                           vid_t* __restrict__ all_new_deg,
+                                           int* __restrict__ any_free_only) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int i = tid >> 5;
     int lane = tid & 31;
@@ -226,7 +229,8 @@ __global__ void delete_compact_warp_kernel(int num_unique,
 
     if (lane == 0) {
         finalize_delete_vertex_meta(i, v, old_deg, write_base,
-                                    d_used, d_ptr, need_shrink, need_free_only, all_new_deg);
+                                    d_used, d_ptr, need_shrink, need_free_only,
+                                    all_new_deg, any_free_only);
     }
 }
 
@@ -241,7 +245,8 @@ __global__ void delete_compact_block_kernel(int num_items,
                                             vid_t** __restrict__ d_ptr,
                                             uint8_t* __restrict__ need_shrink,
                                             uint8_t* __restrict__ need_free_only,
-                                            vid_t* __restrict__ all_new_deg) {
+                                            vid_t* __restrict__ all_new_deg,
+                                            int* __restrict__ any_free_only) {
     int b = blockIdx.x;
     if (b >= num_items) return;
 
@@ -264,7 +269,8 @@ __global__ void delete_compact_block_kernel(int num_items,
 
     if (threadIdx.x == 0) {
         finalize_delete_vertex_meta(i, v, old_deg, cur_base,
-                                    d_used, d_ptr, need_shrink, need_free_only, all_new_deg);
+                                    d_used, d_ptr, need_shrink, need_free_only,
+                                    all_new_deg, any_free_only);
     }
 }
 
@@ -365,7 +371,8 @@ __global__ void hub_compact_to_scratch_kernel(int cnt,
                                               vid_t** __restrict__ d_ptr,
                                               uint8_t* __restrict__ need_shrink,
                                               uint8_t* __restrict__ need_free_only,
-                                              vid_t* __restrict__ all_new_deg) {
+                                              vid_t* __restrict__ all_new_deg,
+                                              int* __restrict__ any_free_only) {
     __shared__ int s_meta[4];
     __shared__ int s_warp_sums[4][8];
     __shared__ int s_chunk_total;
@@ -390,7 +397,8 @@ __global__ void hub_compact_to_scratch_kernel(int cnt,
 
     if (local_chunk == 0 && threadIdx.x == 0) {
         finalize_delete_vertex_meta(i, unique_srcs[i], old_deg, new_deg,
-                                    d_used, d_ptr, need_shrink, need_free_only, all_new_deg);
+                                    d_used, d_ptr, need_shrink, need_free_only,
+                                    all_new_deg, any_free_only);
     }
 
     int chunk_kept = chunk_counts[blockIdx.x];
@@ -448,7 +456,8 @@ inline void launch_hub_compact_chunk(HornetGraph& graph,
                                      BatchWorkspace& ws,
                                      const int* d_indices,
                                      int c_start,
-                                     int cnt) {
+                                     int cnt,
+                                     int* d_any_free_only) {
     if (cnt <= 0) return;
 
     int blk = 256;
@@ -491,7 +500,7 @@ inline void launch_hub_compact_chunk(HornetGraph& graph,
         d_chunk_huge_idx, ws.d_unique_srcs, ws.d_graph_offsets,
         ws.d_all_old_deg, ws.d_all_old_ptr, ws.d_del_keep,
         ws.d_merge_scratch, graph.d_used(), graph.d_ptr(),
-        ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg);
+        ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg, d_any_free_only);
     CUDA_CHECK(cudaGetLastError());
 
     hub_copy_from_scratch_kernel<<<static_cast<unsigned int>(total_chunks), 256>>>(
@@ -503,7 +512,8 @@ inline void launch_hub_compact_chunk(HornetGraph& graph,
 inline void compact_hubs_multiblock(HornetGraph& graph,
                                     BatchWorkspace& ws,
                                     const int* d_indices,
-                                    int count) {
+                                    int count,
+                                    int* d_any_free_only) {
     if (count <= 0) return;
 
     int blk = 256;
@@ -525,7 +535,7 @@ inline void compact_hubs_multiblock(HornetGraph& graph,
 
     if (total_huge_edges <= static_cast<eoff_t>(BatchWorkspace::MAX_SCRATCH_EDGES)) {
         ws.ensure_scratch_capacity(static_cast<size_t>(total_huge_edges));
-        launch_hub_compact_chunk(graph, ws, d_indices, 0, count);
+        launch_hub_compact_chunk(graph, ws, d_indices, 0, count, d_any_free_only);
     } else {
         std::vector<vid_t> h_deg(count);
         CUDA_CHECK(cudaMemcpy(h_deg.data(), d_huge_old_deg,
@@ -545,25 +555,37 @@ inline void compact_hubs_multiblock(HornetGraph& graph,
                 sum += d;
                 ++c_end;
             }
-            launch_hub_compact_chunk(graph, ws, d_indices, c_start, c_end - c_start);
+            launch_hub_compact_chunk(graph, ws, d_indices, c_start, c_end - c_start, d_any_free_only);
             c_start = c_end;
         }
     }
 }
 
+inline void record_zero_delete_remaining_phases(bool record_mark,
+                                                bool record_compact) {
+    if (!HornetProfiler::instance().is_enabled()) return;
+    if (record_mark) HornetProfiler::instance().record_phase("delete_mark", 0.0);
+    if (record_compact) HornetProfiler::instance().record_phase("delete_compact", 0.0);
+    HornetProfiler::instance().record_phase("delete_gpu_alloc", 0.0);
+    HornetProfiler::instance().record_phase("delete_host_alloc", 0.0);
+    HornetProfiler::instance().record_phase("delete_h2d_copy", 0.0);
+    HornetProfiler::instance().record_phase("delete_adj_move", 0.0);
+    HornetProfiler::instance().record_phase("delete_host_free", 0.0);
+}
+
 /**
  * @brief Algorithm 1: Dynamic Batch Deletion (Paper Section III-E, Footnote 2).
  *
- * DS-5: O(batch_deg * log old_deg) edge marking over sorted adjacency lists +
- * order-preserving parallel compaction (warp <= 256, 1-block prefix-skipping
- * 257..4096, adaptive multi-block hub compaction for large/huge hubs) +
- * balanced shrinking moves.
+ * DS-5 + DS-7: O(batch_deg * log old_deg) edge marking over sorted adjacency lists +
+ * order-preserving parallel compaction + GPU BitTree shrink allocation & block
+ * reclamation + balanced shrinking moves.
  */
 inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     ScopedPhaseTimer total_timer("delete_total", true);
     int batch_size = ws.batch_size;
     if (batch_size == 0) return;
 
+    const bool prof = HornetProfiler::instance().is_enabled();
     int blk = 256;
     int vid_bits = (graph.nV() > 1) ? hornet_common::ceil_log2(graph.nV()) : 1;
     if (vid_bits < 1) vid_bits = 1;
@@ -615,7 +637,10 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
             CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
                                   sizeof(int), cudaMemcpyDeviceToHost));
             uniq_count = ws.h_pinned_counts[0];
-            if (uniq_count == 0) return;
+            if (uniq_count == 0) {
+                record_zero_delete_remaining_phases(true, true);
+                return;
+            }
 
             unpack_edges_kernel<<<(uniq_count + blk - 1) / blk, blk>>>(
                 uniq_count, ws.d_keys_uniq, ws.d_src_uniq, ws.d_dst_uniq, vid_bits);
@@ -628,7 +653,10 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
             CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
                                   sizeof(int), cudaMemcpyDeviceToHost));
             num_unique = ws.h_pinned_counts[0];
-            if (num_unique == 0) return;
+            if (num_unique == 0) {
+                record_zero_delete_remaining_phases(true, true);
+                return;
+            }
 
             CUDA_CHECK(cudaMemsetAsync(&ws.d_batch_deg[num_unique], 0, sizeof(int)));
             cub::DeviceScan::ExclusiveSum(
@@ -636,7 +664,10 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
                 num_unique + 1);
         }
 
-        if (uniq_count == 0 || num_unique == 0) return;
+        if (uniq_count == 0 || num_unique == 0) {
+            record_zero_delete_remaining_phases(true, true);
+            return;
+        }
 
         CUDA_CHECK(cudaMemsetAsync(ws.d_scalar_count, 0, 3 * sizeof(int)));
         gather_delete_graph_info_kernel<<<(num_unique + 1 + blk - 1) / blk, blk>>>(
@@ -662,7 +693,10 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
         total_graph_work = ws.h_pinned_counts[3];
     }
 
-    if (total_graph_work == 0) return;
+    if (total_graph_work == 0) {
+        record_zero_delete_remaining_phases(true, true);
+        return;
+    }
 
     // -------------------------------------------------------------------------
     // Phase 2: DS-5 O(batch_deg * log old_deg) Mark Surviving vs Deleted Edges
@@ -683,18 +717,21 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
     // -------------------------------------------------------------------------
     // Phase 3: Order-Preserving Parallel Compaction + Collect Shrink/Free Lists
     // -------------------------------------------------------------------------
-    int num_free_only = 0;
+    int any_free_only = 0;
     int num_shrink = 0;
 
     {
         ScopedPhaseTimer compact_timer("delete_compact", true);
+        CUDA_CHECK(cudaMemsetAsync(ws.d_scalar_count, 0, 2 * sizeof(int)));
+        int* d_any_free_only = &ws.d_scalar_count[1];
+
         int warps_per_blk = blk / 32;
         int warp_grid = (num_unique + warps_per_blk - 1) / warps_per_blk;
         delete_compact_warp_kernel<<<warp_grid, blk>>>(
             num_unique, ws.d_unique_srcs, ws.d_graph_offsets,
             ws.d_all_old_deg, ws.d_all_old_ptr, ws.d_del_keep,
             graph.d_used(), graph.d_ptr(),
-            ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg);
+            ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg, d_any_free_only);
         CUDA_CHECK(cudaGetLastError());
 
         if (num_med > 0) {
@@ -702,56 +739,36 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
                 num_med, d_med_indices, ws.d_unique_srcs, ws.d_graph_offsets,
                 ws.d_all_old_deg, ws.d_all_old_ptr, ws.d_del_keep,
                 graph.d_used(), graph.d_ptr(),
-                ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg);
+                ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg, d_any_free_only);
             CUDA_CHECK(cudaGetLastError());
         }
 
         if (num_large > 0) {
             if (num_large <= 512) {
-                compact_hubs_multiblock(graph, ws, d_large_indices, num_large);
+                compact_hubs_multiblock(graph, ws, d_large_indices, num_large, d_any_free_only);
             } else {
                 delete_compact_block_kernel<<<num_large, 256>>>(
                     num_large, d_large_indices, ws.d_unique_srcs, ws.d_graph_offsets,
                     ws.d_all_old_deg, ws.d_all_old_ptr, ws.d_del_keep,
                     graph.d_used(), graph.d_ptr(),
-                    ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg);
+                    ws.d_need_realloc, ws.d_need_free_only, ws.d_all_new_deg, d_any_free_only);
                 CUDA_CHECK(cudaGetLastError());
             }
         }
 
         if (num_huge > 0) {
-            compact_hubs_multiblock(graph, ws, d_huge_indices, num_huge);
+            compact_hubs_multiblock(graph, ws, d_huge_indices, num_huge, d_any_free_only);
         }
 
-        // DS-2: Reclaim fully emptied blocks (new_deg == 0) via 1 Flagged index pass + 1 gather kernel
+        // DS-2: Collect shrink indices where new_deg < bsize(old_deg) / 2
         cub::DeviceSelect::Flagged(
             ws.d_cub_temp, ws.cub_temp_bytes, thrust::counting_iterator<int>(0),
-            ws.d_need_free_only, ws.d_selected_idx, ws.d_scalar_count, num_unique);
+            ws.d_need_realloc, ws.d_selected_idx, &ws.d_scalar_count[0], num_unique);
 
         CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
-                              sizeof(int), cudaMemcpyDeviceToHost));
-        num_free_only = ws.h_pinned_counts[0];
-
-        if (num_free_only > 0) {
-            gather_free_metadata_kernel<<<(num_free_only + blk - 1) / blk, blk>>>(
-                num_free_only, ws.d_selected_idx, ws.d_all_old_deg, ws.d_all_old_ptr,
-                ws.d_realloc_old_deg, ws.d_realloc_old_ptr);
-            CUDA_CHECK(cudaGetLastError());
-
-            CUDA_CHECK(cudaMemcpy(ws.h_free_deg, ws.d_realloc_old_deg,
-                                  num_free_only * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_free_ptr, ws.d_realloc_old_ptr,
-                                  num_free_only * sizeof(vid_t*), cudaMemcpyDeviceToHost));
-        }
-
-        // DS-2: Shrink blocks where new_deg < bsize(old_deg) / 2 via 1 Flagged index pass + 1 gather kernel
-        cub::DeviceSelect::Flagged(
-            ws.d_cub_temp, ws.cub_temp_bytes, thrust::counting_iterator<int>(0),
-            ws.d_need_realloc, ws.d_selected_idx, ws.d_scalar_count, num_unique);
-
-        CUDA_CHECK(cudaMemcpy(ws.h_pinned_counts, ws.d_scalar_count,
-                              sizeof(int), cudaMemcpyDeviceToHost));
+                              2 * sizeof(int), cudaMemcpyDeviceToHost));
         num_shrink = ws.h_pinned_counts[0];
+        any_free_only = ws.h_pinned_counts[1];
 
         if (num_shrink > 0) {
             gather_realloc_metadata_kernel<<<(num_shrink + blk - 1) / blk, blk>>>(
@@ -760,35 +777,39 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
                 ws.d_realloc_v, ws.d_realloc_old_deg, ws.d_realloc_new_deg,
                 ws.d_realloc_old_ptr);
             CUDA_CHECK(cudaGetLastError());
-
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_v, ws.d_realloc_v,
-                                  num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_deg, ws.d_realloc_old_deg,
-                                  num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_new_deg, ws.d_realloc_new_deg,
-                                  num_shrink * sizeof(vid_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(ws.h_realloc_old_ptr, ws.d_realloc_old_ptr,
-                                  num_shrink * sizeof(vid_t*), cudaMemcpyDeviceToHost));
         }
     }
 
     // -------------------------------------------------------------------------
-    // Phase 4-6: Shrink Block Allocation, H2D Pointer Copy, Balanced Move
+    // Phase 4-7: DS-7 GPU Shrink Allocation, Balanced Move, GPU Reclamation
     // -------------------------------------------------------------------------
     if (num_shrink > 0) {
-        {
-            ScopedPhaseTimer alloc_timer("delete_host_alloc", false);
-            auto& mgr = graph.memory_manager();
-            for (int i = 0; i < num_shrink; ++i) {
-                int log_b = hornet_common::ceil_log2(ws.h_realloc_new_deg[i]);
-                ws.h_realloc_new_ptr[i] = mgr.allocate_block(log_b, false).ptr;
+        double gpu_alloc_ms = 0.0;
+        std::chrono::high_resolution_clock::time_point alloc_t0;
+        bool alloc_nvtx = false;
+        if (prof) {
+            if (HornetProfiler::instance().is_nvtx_enabled()) {
+                nvtxRangePushA("delete_gpu_alloc");
+                alloc_nvtx = true;
             }
+            CUDA_CHECK(cudaDeviceSynchronize());
+            alloc_t0 = std::chrono::high_resolution_clock::now();
         }
 
-        {
-            ScopedPhaseTimer h2d_timer("delete_h2d_copy", true);
-            CUDA_CHECK(cudaMemcpy(ws.d_realloc_new_ptr, ws.h_realloc_new_ptr,
-                                  num_shrink * sizeof(vid_t*), cudaMemcpyHostToDevice));
+        ds7_gpu_allocate_blocks(
+            graph.memory_manager(), ws.ds7_alloc_view(),
+            num_shrink, ws.d_realloc_new_deg, ws.d_realloc_new_ptr,
+            prof, "delete_gpu_alloc", "delete_host_alloc", "delete_h2d_copy",
+            &alloc_t0, &alloc_nvtx, &gpu_alloc_ms);
+
+        if (prof) {
+            if (alloc_nvtx) {
+                cudaDeviceSynchronize();
+                auto alloc_t1 = std::chrono::high_resolution_clock::now();
+                gpu_alloc_ms += std::chrono::duration<double, std::milli>(alloc_t1 - alloc_t0).count();
+                nvtxRangePop();
+            }
+            HornetProfiler::instance().record_phase("delete_gpu_alloc", gpu_alloc_ms);
         }
 
         {
@@ -812,25 +833,43 @@ inline void batch_delete(HornetGraph& graph, BatchWorkspace& ws) {
                     ws.d_realloc_v, ws.d_realloc_old_ptr, ws.d_realloc_new_ptr, graph.d_ptr());
                 CUDA_CHECK(cudaGetLastError());
             }
-        }
-    }
 
-    // -------------------------------------------------------------------------
-    // Phase 7: Host Block Reclamation (Emptied + Old Shrunk Blocks)
-    // -------------------------------------------------------------------------
-    if (num_free_only > 0 || num_shrink > 0) {
-        ScopedPhaseTimer free_timer("delete_host_free", false);
-        auto& mgr = graph.memory_manager();
-        for (int i = 0; i < num_free_only; ++i) {
-            if (ws.h_free_deg[i] > 0 && ws.h_free_ptr[i] != nullptr) {
-                mgr.reclaim_block(ws.h_free_ptr[i], hornet_common::ceil_log2(ws.h_free_deg[i]));
+            // Separate GPU reclamation phase after move kernels finish
+            if (prof && HornetProfiler::instance().is_nvtx_enabled()) {
+                nvtxRangePushA("delete_gpu_reclaim");
+            }
+            ds7_gpu_reclaim_blocks(
+                graph.memory_manager(), num_shrink, ws.d_realloc_old_deg, ws.d_realloc_old_ptr);
+            if (any_free_only != 0) {
+                ds7_gpu_reclaim_masked_blocks(
+                    graph.memory_manager(), num_unique, ws.d_need_free_only,
+                    ws.d_all_old_deg, ws.d_all_old_ptr);
+            }
+            if (prof && HornetProfiler::instance().is_nvtx_enabled()) {
+                nvtxRangePop();
             }
         }
-        for (int i = 0; i < num_shrink; ++i) {
-            if (ws.h_realloc_old_deg[i] > 0 && ws.h_realloc_old_ptr[i] != nullptr) {
-                mgr.reclaim_block(ws.h_realloc_old_ptr[i], hornet_common::ceil_log2(ws.h_realloc_old_deg[i]));
-            }
+
+        if (prof) {
+            HornetProfiler::instance().record_phase("delete_host_free", 0.0);
         }
+    } else if (any_free_only != 0) {
+        if (prof) {
+            HornetProfiler::instance().record_phase("delete_gpu_alloc", 0.0);
+            HornetProfiler::instance().record_phase("delete_host_alloc", 0.0);
+            HornetProfiler::instance().record_phase("delete_h2d_copy", 0.0);
+        }
+        {
+            ScopedPhaseTimer move_timer("delete_adj_move", true);
+            ds7_gpu_reclaim_masked_blocks(
+                graph.memory_manager(), num_unique, ws.d_need_free_only,
+                ws.d_all_old_deg, ws.d_all_old_ptr);
+        }
+        if (prof) {
+            HornetProfiler::instance().record_phase("delete_host_free", 0.0);
+        }
+    } else {
+        record_zero_delete_remaining_phases(false, false);
     }
 }
 

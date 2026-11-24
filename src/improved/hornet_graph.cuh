@@ -186,6 +186,7 @@ private:
         {
             ScopedPhaseTimer dcopy_timer("init_device_copy_loop", true);
             mem_mgr_.flush_all_staging();
+            mem_mgr_.sync_all_bins_to_device();
             CUDA_CHECK(cudaMemcpy(d_used_, h_used.data(),
                                   static_cast<size_t>(nV_) * sizeof(vid_t),
                                   cudaMemcpyHostToDevice));
