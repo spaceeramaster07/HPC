@@ -427,7 +427,15 @@ struct BatchWorkspace {
     void* d_cub_temp = nullptr;
     size_t cub_temp_bytes = 0;
 
-    // Persistent pinned host scalar buffer (counts + 32-int bin deficit check)
+    // Persistent pinned host scalar buffer (`PINNED_COUNTS_CAP` ints), assuming serialized
+    // stream-0 batch execution per workspace with non-overlapping slot reservations:
+    //   [0..3]   : general D2H batch / allocator counts
+    //   [4..5]   : async num_small_realloc / num_large_realloc (batch_insert)
+    //   [16..47] : DS-7 32-bin deficit check (DS7AllocWorkspaceView::PINNED_BIN_DEFICIT_OFFSET)
+    static constexpr int PINNED_COUNTS_CAP = DS7AllocWorkspaceView::PINNED_COUNTS_CAP;
+    static constexpr int PINNED_REALLOC_COUNTS_OFFSET = 4;
+    static_assert(PINNED_REALLOC_COUNTS_OFFSET + 2 <= DS7AllocWorkspaceView::PINNED_BIN_DEFICIT_OFFSET,
+                  "Realloc count slots must not overlap DS-7 bin deficit slots");
     int* h_pinned_counts = nullptr;
 
     static_assert(sizeof(int) == 4 && sizeof(vid_t) == 4 && sizeof(eoff_t) == 4,
@@ -626,7 +634,7 @@ struct BatchWorkspace {
         CUDA_CHECK(cudaMalloc(&d_scalar_count, 8 * sizeof(int)));
 
         // Persistent pinned scalar buffer (counts + 32-int bin deficit check)
-        CUDA_CHECK(cudaMallocHost(&h_pinned_counts, 64 * sizeof(int)));
+        CUDA_CHECK(cudaMallocHost(&h_pinned_counts, PINNED_COUNTS_CAP * sizeof(int)));
 
         // Pre-compute max CUB temporary storage needed across all operations
         size_t req = 0, tmp = 0;

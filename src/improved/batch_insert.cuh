@@ -808,8 +808,9 @@ inline void batch_insert(HornetGraph& graph,
                 &ws.d_scalar_count[4], &ws.d_scalar_count[5]);
             CUDA_CHECK(cudaGetLastError());
 
-            CUDA_CHECK(cudaMemcpyAsync(&ws.h_pinned_counts[4], &ws.d_scalar_count[4],
-                                       2 * sizeof(int), cudaMemcpyDeviceToHost, 0));
+            CUDA_CHECK(cudaMemcpyAsync(&ws.h_pinned_counts[BatchWorkspace::PINNED_REALLOC_COUNTS_OFFSET],
+                                       &ws.d_scalar_count[4], 2 * sizeof(int),
+                                       cudaMemcpyDeviceToHost, 0));
 
             // DS-7: GPU bin-grouped pre-check, optional fallback, and GPU BitTree allocation
             ds7_gpu_allocate_blocks(
@@ -818,8 +819,8 @@ inline void batch_insert(HornetGraph& graph,
                 prof, "insert_gpu_alloc", "insert_host_alloc", "insert_h2d_copy",
                 &br_t0, &br_nvtx, &build_realloc_ms);
 
-            num_small_realloc = ws.h_pinned_counts[4];
-            num_large_realloc = ws.h_pinned_counts[5];
+            num_small_realloc = ws.h_pinned_counts[BatchWorkspace::PINNED_REALLOC_COUNTS_OFFSET];
+            num_large_realloc = ws.h_pinned_counts[BatchWorkspace::PINNED_REALLOC_COUNTS_OFFSET + 1];
         } else if (prof) {
             HornetProfiler::instance().record_phase("insert_host_alloc", 0.0);
             HornetProfiler::instance().record_phase("insert_h2d_copy", 0.0);

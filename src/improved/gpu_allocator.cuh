@@ -18,6 +18,13 @@ struct SlabAllocTask {
 };
 
 struct DS7AllocWorkspaceView {
+    // Assumes serialized stream-0 execution per BatchWorkspace; reserves h_pinned_counts[16..47]
+    // for the 32-bin deficit check while leaving [0..3] and [4..5] untouched for callers.
+    static constexpr int PINNED_COUNTS_CAP = 64;
+    static constexpr int PINNED_BIN_DEFICIT_OFFSET = 16;
+    static_assert(PINNED_BIN_DEFICIT_OFFSET + MemoryManager::MAX_BINS <= PINNED_COUNTS_CAP,
+                  "DS-7 bin deficit slots exceed pinned scalar buffer capacity");
+
     uint8_t* d_req_bin = nullptr;
     int* d_bucket_req_idx = nullptr;
     int* d_single_task_idx = nullptr;
@@ -30,7 +37,7 @@ struct DS7AllocWorkspaceView {
     int* d_bin_cursor = nullptr;    // [32]
     int* d_bin_deficit = nullptr;   // [32]
     int* d_alloc_counts = nullptr;  // [4]: single, med, huge, total
-    int* h_pinned_counts = nullptr; // [64]
+    int* h_pinned_counts = nullptr; // [PINNED_COUNTS_CAP]
 };
 
 __device__ __forceinline__ int ds7_ceil_log2(int x) {
@@ -914,8 +921,8 @@ inline void ds7_gpu_allocate_blocks(MemoryManager& mgr,
         num_reqs, aw.d_req_bin, aw.d_bin_cursor, aw.d_bucket_req_idx);
     CUDA_CHECK(cudaGetLastError());
 
-    // Pre-claim check: copy only the 32-int shortfall array to host
-    int* h_deficit = aw.h_pinned_counts + 16;
+    // Pre-claim check: copy only the 32-int shortfall array to reserved pinned slots
+    int* h_deficit = aw.h_pinned_counts + DS7AllocWorkspaceView::PINNED_BIN_DEFICIT_OFFSET;
     CUDA_CHECK(cudaMemcpy(h_deficit, aw.d_bin_deficit,
                           MemoryManager::MAX_BINS * sizeof(int), cudaMemcpyDeviceToHost));
 

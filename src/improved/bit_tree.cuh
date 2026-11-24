@@ -12,7 +12,9 @@ namespace improved {
  *
  * Tracks free (1) vs used (0) blocks in a BlockArray using a flat-packed
  * hierarchical bitwise-OR tree of 64-bit machine words (levels_[0] = root,
- * levels_[num_levels - 1] = leaf), suitable for direct upload to GPU VRAM.
+ * levels_[num_levels - 1] = leaf). Host instances build the initial state and
+ * layout metadata uploaded to GPU VRAM (`d_bittree_`); runtime block
+ * allocations and frees operate exclusively on GPU `d_bittree_`.
  */
 class BitTree {
 public:
@@ -46,13 +48,8 @@ public:
         mark_prefix_used(0);
     }
 
-    bool has_free() const {
-        return num_levels_ > 0 && !words_.empty() && words_[0] != 0ULL;
-    }
-
     int free_count() const { return free_count_; }
     int num_blocks() const { return num_blocks_; }
-    int used_count() const { return num_blocks_ - free_count_; }
     int num_levels() const { return num_levels_; }
     const int* level_offsets() const { return level_offsets_; }
     int level_size(int level) const { return level_offsets_[level + 1] - level_offsets_[level]; }
@@ -87,58 +84,6 @@ public:
                 }
             }
         }
-    }
-
-    int allocate_block() {
-        if (!has_free()) return -1;
-
-        int idx = 0;
-        for (int l = 0; l < num_levels_ - 1; ++l) {
-            int bit = __builtin_ctzll(words_[level_offsets_[l] + idx]);
-            idx = (idx << 6) + bit;
-        }
-
-        const int leaf_off = level_offsets_[num_levels_ - 1];
-        int leaf_word = idx;
-        int leaf_bit = __builtin_ctzll(words_[leaf_off + leaf_word]);
-        int block_idx = (leaf_word << 6) + leaf_bit;
-
-        // Clear bit at leaf and propagate emptiness upward
-        words_[leaf_off + leaf_word] &= ~(1ULL << leaf_bit);
-        int child_word = leaf_word;
-        for (int l = num_levels_ - 2; l >= 0; --l) {
-            if (words_[level_offsets_[l + 1] + child_word] != 0ULL) {
-                break;
-            }
-            int p_word = child_word >> 6;
-            int p_bit = child_word & 63;
-            words_[level_offsets_[l] + p_word] &= ~(1ULL << p_bit);
-            child_word = p_word;
-        }
-
-        --free_count_;
-        return block_idx;
-    }
-
-    void free_block(int block_idx) {
-        assert(block_idx >= 0 && block_idx < num_blocks_);
-
-        const int leaf_off = level_offsets_[num_levels_ - 1];
-        int word = block_idx >> 6;
-        int bit = block_idx & 63;
-        bool was_free = ((words_[leaf_off + word] >> bit) & 1ULL) != 0ULL;
-        if (was_free) return;
-
-        words_[leaf_off + word] |= (1ULL << bit);
-        int child_word = word;
-        for (int l = num_levels_ - 2; l >= 0; --l) {
-            int p_word = child_word >> 6;
-            int p_bit = child_word & 63;
-            words_[level_offsets_[l] + p_word] |= (1ULL << p_bit);
-            child_word = p_word;
-        }
-
-        ++free_count_;
     }
 
 private:

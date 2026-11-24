@@ -69,7 +69,8 @@ public:
     }
 
     ~MemoryManager() {
-        clear();
+        // Directory pointers are freed immediately below, so skip zeroing them.
+        clear(false);
         if (d_bin_descs_arr_) cudaFree(d_bin_descs_arr_);
         if (d_bin_free_counts_arr_) cudaFree(d_bin_free_counts_arr_);
         if (d_bin_ptr_lookup_arr_) cudaFree(d_bin_ptr_lookup_arr_);
@@ -85,7 +86,7 @@ public:
     MemoryManager(const MemoryManager&) = delete;
     MemoryManager& operator=(const MemoryManager&) = delete;
 
-    void clear() {
+    void clear(bool reset_dir = true) {
         for (int b = 0; b < MAX_BINS; ++b) {
             if (d_bin_descs_buf_[b]) {
                 cudaFreeAsync(d_bin_descs_buf_[b], 0);
@@ -103,7 +104,7 @@ public:
             h_ptr_lookup_[b].clear();
             all_bas_[b].clear();
         }
-        if (d_bin_descs_arr_) {
+        if (reset_dir && d_bin_descs_arr_) {
             reset_device_directory();
         }
     }

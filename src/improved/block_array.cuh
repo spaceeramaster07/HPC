@@ -106,10 +106,10 @@ public:
         }
     }
 
-    bool has_free() const { return bit_tree_.has_free(); }
+    // Host BitTree reflects only the initial slab state uploaded to d_bittree_;
+    // runtime allocations and frees operate exclusively on GPU d_bittree_.
     int free_count() const { return bit_tree_.free_count(); }
     int num_blocks() const { return num_blocks_; }
-    int used_blocks() const { return bit_tree_.used_count(); }
     void mark_prefix_used(int used_blocks) { bit_tree_.mark_prefix_used(used_blocks); }
     int log_bsize() const { return log_bsize_; }
     size_t block_size() const { return block_size_; }
@@ -124,20 +124,6 @@ public:
 
     bool owns_ptr(const vid_t* ptr) const {
         return ptr >= d_edges_ && ptr < (d_edges_ + total_edges_);
-    }
-
-    vid_t* allocate_block(int* out_block_idx = nullptr) {
-        int bidx = bit_tree_.allocate_block();
-        if (bidx < 0) return nullptr;
-        if (out_block_idx) *out_block_idx = bidx;
-        return d_edges_ + static_cast<size_t>(bidx) * block_size_;
-    }
-
-    void free_block_by_ptr(const vid_t* ptr) {
-        assert(owns_ptr(ptr));
-        size_t offset = static_cast<size_t>(ptr - d_edges_);
-        int bidx = static_cast<int>(offset >> log_bsize_);
-        bit_tree_.free_block(bidx);
     }
 
 private:
