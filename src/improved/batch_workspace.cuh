@@ -193,6 +193,63 @@ __device__ __forceinline__ int dev_ceil_log2(int x) {
     return 32 - __clz(static_cast<unsigned int>(x - 1));
 }
 
+__device__ __forceinline__ void warp_append_idx(bool pred,
+                                                int value,
+                                                int* __restrict__ out_indices,
+                                                int* __restrict__ out_count) {
+    unsigned active = __activemask();
+    unsigned mask = __ballot_sync(active, pred);
+    if (pred) {
+        int lane = threadIdx.x & 31;
+        int leader = __ffs(mask) - 1;
+        int base = 0;
+        if (lane == leader) {
+            base = atomicAdd(out_count, __popc(mask));
+        }
+        base = __shfl_sync(mask, base, leader);
+        int rank = __popc(mask & ((1u << lane) - 1u));
+        out_indices[base + rank] = value;
+    }
+}
+
+__device__ __forceinline__ int dev_merge_path_partition(const vid_t* __restrict__ A,
+                                                        int lenA,
+                                                        const vid_t* __restrict__ B,
+                                                        int lenB,
+                                                        int diag) {
+    int a_min = (diag > lenB) ? (diag - lenB) : 0;
+    int a_max = (diag < lenA) ? diag : lenA;
+    int lo = a_min;
+    int hi = a_max;
+    while (lo < hi) {
+        int mid = lo + ((hi - lo) >> 1);
+        vid_t a_val = A[mid];
+        vid_t b_val = B[diag - mid - 1];
+        if (a_val > b_val) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return lo;
+}
+
+__device__ __forceinline__ vid_t dev_lower_bound(const vid_t* __restrict__ arr,
+                                                 vid_t len,
+                                                 vid_t target) {
+    vid_t lo = 0;
+    vid_t hi = len;
+    while (lo < hi) {
+        vid_t mid = lo + ((hi - lo) >> 1);
+        if (arr[mid] < target) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
 __device__ __forceinline__ int dev_upper_bound_offsets(const eoff_t* __restrict__ offsets,
                                                        int num_items,
                                                        eoff_t target) {
@@ -312,9 +369,13 @@ __global__ void adj_move_balanced_kernel(int num_realloc,
 
 
 struct BatchWorkspace {
+    static constexpr size_t MAX_SCRATCH_EDGES = 64ULL << 20; // 256 MiB bounded scratch cap
+
     int capacity = 0;
     int batch_size = 0;
     size_t del_keep_capacity = 0;
+    size_t merge_scratch_capacity = 0;
+    size_t hub_chunk_capacity = 0;
 
     // Device batch buffers
     vid_t* d_raw_src = nullptr;
@@ -334,6 +395,11 @@ struct BatchWorkspace {
     eoff_t* d_graph_deg = nullptr;
     eoff_t* d_graph_offsets = nullptr;
     uint8_t* d_del_keep = nullptr;
+
+    // DS-5: Bounded reusable scratch buffers for huge hub merge & multi-block delete compaction
+    vid_t* d_merge_scratch = nullptr;
+    int* d_hub_chunk_counts = nullptr;
+    eoff_t* d_hub_chunk_prefix = nullptr;
 
     uint8_t* d_need_realloc = nullptr;
     uint8_t* d_need_free_only = nullptr;
@@ -365,6 +431,20 @@ struct BatchWorkspace {
     vid_t** h_free_ptr = nullptr;
     int* h_pinned_counts = nullptr;
 
+    static_assert(sizeof(int) == 4 && sizeof(vid_t) == 4 && sizeof(eoff_t) == 4,
+                  "Scratch aliasing requires 32-bit int/vid_t/eoff_t");
+
+    // Non-overlapping typed views over dead Phase-1 key buffers (sized (capacity + 1) uint64_t each)
+    eoff_t* realloc_batch_offset_buf() const { return reinterpret_cast<eoff_t*>(d_keys_in); }
+    int* small_realloc_idx_buf() const { return reinterpret_cast<int*>(d_keys_sorted); }
+    int* large_realloc_idx_buf() const { return reinterpret_cast<int*>(d_keys_sorted) + (capacity + 1); }
+    int* small_inplace_idx_buf() const { return reinterpret_cast<int*>(d_keys_uniq); }
+    int* med_inplace_idx_buf() const { return reinterpret_cast<int*>(d_keys_uniq) + (capacity + 1); }
+    int* huge_inplace_idx_buf() const { return reinterpret_cast<int*>(d_graph_deg); }
+    vid_t* huge_old_deg_buf() const { return reinterpret_cast<vid_t*>(d_keys_in); }
+    eoff_t* tile_counts_buf() const { return reinterpret_cast<eoff_t*>(d_keys_sorted); }
+    eoff_t* hub_chunks_per_hub_buf() const { return reinterpret_cast<eoff_t*>(d_keys_uniq); }
+
     ~BatchWorkspace() { free_all(); }
 
     void free_all() {
@@ -384,6 +464,9 @@ struct BatchWorkspace {
         if (d_graph_deg) cudaFree(d_graph_deg);
         if (d_graph_offsets) cudaFree(d_graph_offsets);
         if (d_del_keep) cudaFree(d_del_keep);
+        if (d_merge_scratch) cudaFree(d_merge_scratch);
+        if (d_hub_chunk_counts) cudaFree(d_hub_chunk_counts);
+        if (d_hub_chunk_prefix) cudaFree(d_hub_chunk_prefix);
         if (d_need_realloc) cudaFree(d_need_realloc);
         if (d_need_free_only) cudaFree(d_need_free_only);
         if (d_all_old_deg) cudaFree(d_all_old_deg);
@@ -412,6 +495,9 @@ struct BatchWorkspace {
         d_filt_src = d_filt_dst = d_unique_srcs = nullptr;
         d_keys_in = d_keys_sorted = d_keys_uniq = nullptr;
         d_keep = d_del_keep = d_need_realloc = d_need_free_only = nullptr;
+        d_merge_scratch = nullptr;
+        d_hub_chunk_counts = nullptr;
+        d_hub_chunk_prefix = nullptr;
         d_batch_deg = nullptr;
         d_batch_offsets = d_graph_deg = d_graph_offsets = d_move_offsets = nullptr;
         d_all_old_deg = d_all_new_deg = d_realloc_v = d_realloc_old_deg = d_realloc_new_deg = nullptr;
@@ -429,6 +515,8 @@ struct BatchWorkspace {
         capacity = 0;
         host_capacity = 0;
         del_keep_capacity = 0;
+        merge_scratch_capacity = 0;
+        hub_chunk_capacity = 0;
         cub_temp_bytes = 0;
     }
 
@@ -444,6 +532,49 @@ struct BatchWorkspace {
         del_keep_capacity = alloc_n;
     }
 
+    void ensure_scratch_capacity(size_t n) {
+        if (n <= merge_scratch_capacity) return;
+        if (d_merge_scratch) {
+            cudaFree(d_merge_scratch);
+            d_merge_scratch = nullptr;
+            merge_scratch_capacity = 0;
+        }
+        size_t alloc_n = (n <= MAX_SCRATCH_EDGES)
+                             ? std::min(MAX_SCRATCH_EDGES, std::max<size_t>(n + n / 8, 1024))
+                             : n;
+        CUDA_CHECK(cudaMalloc(&d_merge_scratch, alloc_n * sizeof(vid_t)));
+        merge_scratch_capacity = alloc_n;
+    }
+
+    void ensure_hub_chunk_capacity(size_t n) {
+        if (n <= hub_chunk_capacity) return;
+        if (d_hub_chunk_counts) {
+            cudaFree(d_hub_chunk_counts);
+            d_hub_chunk_counts = nullptr;
+        }
+        if (d_hub_chunk_prefix) {
+            cudaFree(d_hub_chunk_prefix);
+            d_hub_chunk_prefix = nullptr;
+        }
+        hub_chunk_capacity = 0;
+        size_t alloc_n = std::max<size_t>(n + n / 4, 1024);
+        CUDA_CHECK(cudaMalloc(&d_hub_chunk_counts, alloc_n * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_hub_chunk_prefix, alloc_n * sizeof(eoff_t)));
+        hub_chunk_capacity = alloc_n;
+    }
+
+    void ensure_cub_temp(size_t required_bytes) {
+        if (required_bytes <= cub_temp_bytes) return;
+        if (d_cub_temp) {
+            cudaFree(d_cub_temp);
+            d_cub_temp = nullptr;
+            cub_temp_bytes = 0;
+        }
+        size_t alloc_bytes = std::max<size_t>(required_bytes, 256);
+        CUDA_CHECK(cudaMalloc(&d_cub_temp, alloc_bytes));
+        cub_temp_bytes = alloc_bytes;
+    }
+
     void ensure_capacity(int n) {
         if (n <= capacity) return;
         free_all();
@@ -451,9 +582,9 @@ struct BatchWorkspace {
 
         CUDA_CHECK(cudaMalloc(&d_raw_src, capacity * sizeof(vid_t)));
         CUDA_CHECK(cudaMalloc(&d_raw_dst, capacity * sizeof(vid_t)));
-        CUDA_CHECK(cudaMalloc(&d_keys_in, capacity * sizeof(uint64_t)));
-        CUDA_CHECK(cudaMalloc(&d_keys_sorted, capacity * sizeof(uint64_t)));
-        CUDA_CHECK(cudaMalloc(&d_keys_uniq, capacity * sizeof(uint64_t)));
+        CUDA_CHECK(cudaMalloc(&d_keys_in, (capacity + 1) * sizeof(uint64_t)));
+        CUDA_CHECK(cudaMalloc(&d_keys_sorted, (capacity + 1) * sizeof(uint64_t)));
+        CUDA_CHECK(cudaMalloc(&d_keys_uniq, (capacity + 1) * sizeof(uint64_t)));
         CUDA_CHECK(cudaMalloc(&d_src_uniq, capacity * sizeof(vid_t)));
         CUDA_CHECK(cudaMalloc(&d_dst_uniq, capacity * sizeof(vid_t)));
         CUDA_CHECK(cudaMalloc(&d_keep, capacity * sizeof(uint8_t)));
