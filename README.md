@@ -12,17 +12,17 @@ A modular reproduction and data-structure optimization project based on **Hornet
 * `src/baseline/` — Paper-faithful 2018 Hornet baseline (`baseline_benchmark`, `-DHORNET_DS_NS=baseline`):
   * `bit_tree.cuh`, `btree.hpp`, `block_array.cuh`, `memory_manager.cuh`, `hornet_graph.cuh`
   * `batch_workspace.cuh` (block-cooperative shared-memory `binarySearchLB`), `batch_insert.cuh`, `batch_delete.cuh` (with warp/block compaction & NVTX3/phase timers), `batch_update.cuh`
-* `src/improved/` — Active optimization target (`improved_benchmark`, `-DHORNET_DS_NS=improved`), initialized from the faithful `src/baseline/` implementation for `DS-1`–`DS-7` improvements.
+* `src/improved/` — Optimized Hornet data structure (`improved_benchmark`, `-DHORNET_DS_NS=improved`) implementing `DS-1`–`DS-5` and `DS-7` (`gpu_allocator.cuh` GPU-resident `BitTree` + device block allocator, OpenMP CSR init, sorted adjacency lists, tight radix-sort packing, small-batch fast path, CUDA mempool).
 * `src/algorithms/` — Fixed, data-structure-agnostic analytics & benchmark harness:
   * **Static Traversal:** BFS vs Static CSR (`bfs.cuh`), SpMV vs Static CSR (`spmv.cuh`)
   * **Dynamic Analytics:** Maximal K-Truss (`ktruss.cuh`), Dynamic Triangle Counting (`triangle_counting.cuh`)
   * **Harness & I/O:** `benchmark.cu`, `types.cuh`, `graph_io.hpp`, `analytics.cuh`
-* `scripts/` — Dataset download (`download_paper_datasets.py`), automated benchmark + `nsys` runner (`run_paper_experiments.py`), summary & Amdahl analyzer (`analyze_results.py`), and figure generator (`generate_plots.py`).
-* `results/baseline/` — Committed baseline measurements (`raw.csv`, `analysis_summary.md`, `memory_results.txt`, `bfs_spmv_results.txt`, `tc_results.txt`, `ktruss_results.txt`, `nsys_*_stats.txt`, `plots/*.png`). `results/improved/` holds outputs from `--mode improved` runs.
+* `scripts/` — Dataset download (`download_paper_datasets.py`), automated benchmark + `nsys` runner (`run_paper_experiments.py`), summary & Amdahl analyzer (`analyze_results.py`), per-mode figure generator (`generate_plots.py`), and side-by-side comparison generator (`compare_results.py`).
+* `results/baseline/`, `results/improved/`, `results/comparison/` — Baseline measurements, `DS-1..DS-7` improved measurements, and side-by-side comparison report/plots (`comparison_summary.md`, `plots/*.png`).
 
-**Git Branches:**
-* `main` — Baseline (`src/baseline/`), improved scaffold (`src/improved/`), shared harness (`src/algorithms/`), scripts, and `results/baseline/`.
-* `analysis` — Profiling audit & `DS-1`–`DS-7` optimization roadmap (`HOTSPOTS.md`).
+**Primary Documents & Branches:**
+* `main` — Baseline (`src/baseline/`), optimized `DS-1..DS-7` (`src/improved/`), shared harness (`src/algorithms/`), scripts, `HOTSPOTS.md`, and `results/{baseline,improved,comparison}/`.
+* `analysis` — Initial profiling audit & `DS-1`–`DS-7` optimization roadmap (`HOTSPOTS.md`).
 
 ---
 
@@ -140,6 +140,9 @@ Replace `./src/improved/build/improved_benchmark` with `./src/baseline/build/bas
 .venv/bin/python3 scripts/run_paper_experiments.py --mode baseline
 .venv/bin/python3 scripts/analyze_results.py --mode baseline      # writes results/baseline/analysis_summary.md
 .venv/bin/python3 scripts/generate_plots.py --mode baseline       # writes results/baseline/plots/*.png
+
+# Generate side-by-side Baseline vs. Improved report & plots
+.venv/bin/python3 scripts/compare_results.py                      # writes results/comparison/comparison_summary.md & plots/*.png
 ```
 
 Useful options:
@@ -155,19 +158,39 @@ Generated outputs under `results/<mode>/`:
 
 ---
 
-## 6. Faithfulness Baseline Snapshot (`main@98fa57d`, `results/baseline/`)
+## 6. Faithfulness Baseline Snapshot (`results/baseline/`)
 
 Measured across the 5 graphs on the faithful 2018 paper baseline ([`results/baseline/analysis_summary.md`](results/baseline/analysis_summary.md)):
 
 * **Memory Utilization (Fig. 4):** **71.0%–75.9%** block-level utilization from power-of-2 rounding; at `BA_EXP=16`, BlockArray utilization reaches **92.79%–99.92%**.
-* **CSR Initialization (Sec. III-D):** **148.38–523.33 ms**, with single-threaded host `init_vertex_loop` consuming **71.5%–79.3%** (**106.16–406.19 ms**) and BlockArray host-to-device copy consuming **20.6%–27.2%**.
-* **Static-CSR Traversal Parity (Fig. 7 & 8):** BFS achieves **0.93x–1.06x** of Static CSR (up to **10,802.54 MTEPS** on `kron_g500-logn21`); SpMV achieves **0.81x–0.97x** of Static CSR.
+* **CSR Initialization (Sec. III-D):** **142.60–503.70 ms**, with single-threaded host `init_vertex_loop` consuming **71.7%–79.5%** (**102.31–398.66 ms**) and BlockArray copy consuming **20.4%–27.9%**.
+* **Static-CSR Traversal Parity (Fig. 7 & 8):** BFS achieves **0.94x–1.00x** of Static CSR (up to **11,503.26 MTEPS** on `kron_g500-logn21`); SpMV achieves **0.81x–0.96x** of Static CSR.
 * **Dynamic Batch Updates (Fig. 5 & 6):**
-  * **Insert ($B = 10^7$):** **50.78M–218.10M upd/s** median (up to **287.93M upd/s** peak on `dblp-2010`; **123.07M upd/s** median on `cage15`).
-  * **Delete ($B = 10^7$):** **148.47M–697.02M upd/s** median (**715.01M upd/s** peak on `dblp-2010`; **247.11M upd/s** median on `kron_g500-logn21`).
-* **Dynamic Maximal K-Truss (Fig. 9):** Up to **148.77M upd/s** peak (`cage15`: **925.86 ms** for **94,044,692** deleted edges across 12 steps), **53.77M upd/s** (`dblp-2010`), **40.16M upd/s** (`soc-LiveJournal1`), and **36.24M upd/s** (`in-2004`).
-* **Primary Remaining Data-Structure Bottlenecks (see `HOTSPOTS.md` on `analysis`):**
-  1. **Host CPU Alloc/Free + Metadata Ping-Pong:** At $B = 10^6$, `insert_host_alloc` + `insert_host_free` consume **40.7%–79.8%** of total insert time (**66.6%–79.8%** on 4 of 5 graphs; up to **4.95x** Amdahl ceiling on `soc-LiveJournal1` and **4.57x** on `dblp-2010`), and `delete_host_alloc` + `delete_host_free` consume **67.7%** of `dblp-2010` delete (**7.68 / 11.35 ms**).
-  2. **CUDA Driver `cudaMalloc`/`cudaFree` Stalls & Zero-Filled Staging:** `cudaFree` accounts for **58.1%–65.6%** of CUDA API time in 10k `nsys` traces.
-  3. **$O(\text{deg})$ Unsorted-Adjacency Scans:** `check_cross_dups_lb_kernel` takes **44.5%** of GPU kernel time on `in-2004` ($B = 10^6$ insert), and on `kron_g500-logn21` ($B = 10^6$ delete) `delete_mark` (**13.79 ms**, **64.4%**) + single-block `delete_compact` (**6.65 ms**, **31.0%**) dominate GPU time.
-  4. **Small-Batch Latency Floor & Preprocessing:** ~15 separate CUB/CUDA launches give a **~0.38–0.83 ms** floor for $B \le 10^3$, while `DeviceRadixSort` runs full 64-bit keys on `< 24`-bit vertex IDs.
+  * **Insert ($B = 10^7$):** **53.7M–229.4M upd/s** median (up to **292.0M upd/s** peak on `dblp-2010`; **132.2M upd/s** median on `cage15`).
+  * **Delete ($B = 10^7$):** **149.7M–259.9M upd/s** median on the 4 graphs with $|E| \ge 10^7$ (`149.7M` `cage15`, `175.7M` `in-2004`, `192.1M` `soc-LiveJournal1`, `259.9M` `kron_g500-logn21`; `dblp-2010` clamps to $|E| = 1,615,400$ at **117.2M upd/s** in `13.78 ms`).
+* **Dynamic Maximal K-Truss (Fig. 9):** Up to **156.0M upd/s** peak (`cage15`: **854.14 ms** for **94,044,692** deleted edges across 12 steps), **62.4M upd/s** (`dblp-2010`), **44.0M upd/s** (`soc-LiveJournal1`), and **38.0M upd/s** (`in-2004`).
+* **Primary Remaining Data-Structure Bottlenecks (see `HOTSPOTS.md`):**
+  1. **Host CPU Alloc/Free + Metadata Ping-Pong:** At $B = 10^6$, `insert_host_alloc` + `insert_host_free` consume **34.7%–78.7%** of total insert time (**62.0%–78.7%** on 4 of 5 graphs).
+  2. **CUDA Driver `cudaMalloc`/`cudaFree` Stalls & Zero-Filled Staging:** `cudaFree` takes **148.3 ms** (**54.4%** of CUDA API time) in `in-2004` $B = 10^6$ `nsys`.
+  3. **$O(\text{deg})$ Unsorted-Adjacency Scans:** `check_cross_dups_lb_kernel` takes **44.7%** (**1,985.7 us**) of GPU kernel time on `in-2004` ($B = 10^6$ insert), and on `kron_g500-logn21` ($B = 10^6$ delete) `delete_mark` + `delete_compact` dominate GPU time (**21.03 ms** total).
+  4. **Small-Batch Latency Floor & Preprocessing:** Separate CUB launches give a **~0.39–0.70 ms** floor for $B \le 10^2$, while `DeviceRadixSort` runs full 64-bit keys on `< 24`-bit vertex IDs.
+
+---
+
+## 7. Final Optimization Summary (`DS-1..DS-7` vs. Baseline)
+
+Measured side by side in [`results/comparison/comparison_summary.md`](results/comparison/comparison_summary.md) with zero algorithm changes (`src/algorithms/` traversal/analytics kernels untouched):
+
+* **CSR Initialization (`DS-1` + `DS-4`):** **3.10x–17.16x faster** (**8.31–152.28 ms** vs. **142.60–503.70 ms** baseline) via 2-pass OpenMP degree histogram + uninitialized prefix-sized staging + `cudaMallocAsync`.
+* **Dynamic Batch Insert (`DS-2`, `DS-3`, `DS-5`, `DS-7`):**
+  * **$B = 10^6$ (`--graph-dedup`):** **3.05x–10.67x faster** (**1.75–6.90 ms**, up to **571.9M upd/s** median on `dblp-2010`); `--no-dedup` reaches **652.6M upd/s** (**12.77x**).
+  * **$B = 10^7$ (`--graph-dedup`):** **3.07x–7.33x faster** (**11.36–29.09 ms**, **343.8M–880.2M upd/s** median).
+  * **Small-Slab `BA_EXP=16/19` ($B = 10^6$):** **4.81x–6.88x faster** (`in-2004`, `kron_g500-logn21`).
+* **Dynamic Batch Delete (`DS-2`, `DS-3`, `DS-5`, `DS-7`):**
+  * **$B = 10^6$:** **2.13x–7.36x faster** (**1.39–9.87 ms**, up to **720.0M upd/s** on `dblp-2010`).
+  * **$B = 10^7$ (effective `min(B, |E|)`):** **1.78x–3.57x faster** on the 4 graphs with $|E| \ge 10^7$ (up to **626.5M upd/s** on `in-2004`); on `dblp-2010` (clamped by `select_random_edges` to $|E| = 1,615,400$), latency drops **8.79x** (**13.78 → 1.57 ms**, **1.03B upd/s** effective vs. **117.2M upd/s**).
+* **Host-Serial Alloc/Free Elimination (`DS-7`):** Per-vertex CPU `BPlusTree`/`BitTree` alloc & free eliminated (`34.7%–78.7%` → **`0.0%` / `0.0000 ms`** at $B = 10^4$ and $10^6$, with **14.456 → 0.000 MB** D2H transfer in `in-2004` $B = 10^6$ `nsys`); only rare slab-exhaustion fallback (~**0.48–1.37 ms**) runs on $B = 10^7$.
+* **Dynamic Analytics (Unchanged Kernels):**
+  * **Dynamic Triangle Counting ($B = 10^5$):** **1.72x–5.78x faster**, and sorted adjacency lists (`DS-5`) restore exact post-insert triangle deltas (`dblp-2010`: `17 → 19`; `in-2004`: `1,900 → 1,904`).
+  * **Dynamic Maximal K-Truss (`max_k = 50`):** **2.36x faster** on `cage15` (**854.14 → 361.79 ms**, **560.8M upd/s** peak) and **1.54x faster** on `dblp-2010` (**175.21 → 113.80 ms**, **186.9M upd/s** peak), with identical deleted edge counts across all 4 tested graphs (`kron_g500-logn21` skipped identically in both modes).
+* **Static Traversal Parity:** BFS remains **0.94x–0.99x** of Static CSR (up to **11,418.11 MTEPS** on `kron_g500-logn21`); SpMV remains **0.81x–0.99x**.

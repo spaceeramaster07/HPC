@@ -24,14 +24,69 @@ BFS_FILE = RESULTS_DIR / "bfs_spmv_results.txt"
 KTRUSS_FILE = RESULTS_DIR / "ktruss_results.txt"
 TC_FILE = RESULTS_DIR / "tc_results.txt"
 
-def analyze_insert_updates():
-    if not RAW_CSV.exists():
+def load_graph_edge_counts(mem_file=None):
+    """Return {graph_name: directed_edge_count} parsed from memory_results.txt."""
+    path = Path(mem_file) if mem_file else MEM_FILE
+    edge_counts = {}
+    if not path.exists():
+        return edge_counts
+    with open(path, "r") as f:
+        for line in f:
+            if "[MEMORY_SUMMARY" in line:
+                m = re.search(r"Graph=(\S+)\s+\|V\|=\d+\s+\|E\|=(\d+)", line)
+                if m:
+                    edge_counts[m.group(1)] = int(m.group(2))
+    return edge_counts
+
+
+def effective_delete_batch(graph_name, raw_batch_size, edge_counts):
+    """Return (effective_batch, was_clamped) accounting for |E| clamping on delete."""
+    nE = edge_counts.get(graph_name)
+    if nE is None:
+        return raw_batch_size, False
+    if raw_batch_size > nE:
+        return nE, True
+    if raw_batch_size == nE and raw_batch_size not in (1, 10, 100, 1000, 10000, 100000, 1000000, 10000000):
+        return nE, True
+    return raw_batch_size, False
+
+
+def _compute_rate_stats(grouped_times):
+    """Compute median, IQR, min, max, and throughput stats per (graph, batch)."""
+    stats = {}
+    for (g, eff_b, clamped), times in sorted(grouped_times.items()):
+        arr = np.array(times)
+        med = float(np.median(arr))
+        min_t = float(np.min(arr))
+        max_t = float(np.max(arr))
+        q25 = float(np.percentile(arr, 25))
+        q75 = float(np.percentile(arr, 75))
+        iqr = q75 - q25
+
+        # Rates (updates/sec)
+        stats[(g, eff_b)] = {
+            "n": len(arr),
+            "med_ms": med,
+            "min_ms": min_t,
+            "max_ms": max_t,
+            "iqr_ms": iqr,
+            "rate_med": eff_b / (med / 1000.0),
+            "rate_min": eff_b / (max_t / 1000.0),
+            "rate_max": eff_b / (min_t / 1000.0), # fastest time = max rate
+            "clamped": clamped,
+        }
+    return stats
+
+
+def analyze_insert_updates(raw_csv=None):
+    csv_path = Path(raw_csv) if raw_csv else RAW_CSV
+    if not csv_path.exists():
         return {}, {}
 
-    data = {} # (graph, batch_size) -> list of total_ms
+    data = {} # (graph, batch_size, False) -> list of total_ms
     phase_data = {} # (graph, batch_size, phase) -> list of ms
 
-    with open(RAW_CSV, "r") as f:
+    with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row["flags"] == "--graph-dedup":
@@ -40,45 +95,21 @@ def analyze_insert_updates():
                 p = row["phase"]
                 t = float(row["time_ms"])
                 if p == "insert_total" and b > 0:
-                    data.setdefault((g, b), []).append(t)
+                    data.setdefault((g, b, False), []).append(t)
                 elif b > 0:
                     phase_data.setdefault((g, b, p), []).append(t)
 
-    stats = {}
-    for (g, b), times in sorted(data.items()):
-        arr = np.array(times)
-        med = np.median(arr)
-        min_t = np.min(arr)
-        max_t = np.max(arr)
-        q25 = np.percentile(arr, 25)
-        q75 = np.percentile(arr, 75)
-        iqr = q75 - q25
+    return _compute_rate_stats(data), phase_data
 
-        # Rates (updates/sec)
-        rate_med = b / (med / 1000.0)
-        rate_max = b / (min_t / 1000.0) # fastest time = max rate
-        rate_min = b / (max_t / 1000.0)
-
-        stats[(g, b)] = {
-            "n": len(arr),
-            "med_ms": med,
-            "min_ms": min_t,
-            "max_ms": max_t,
-            "iqr_ms": iqr,
-            "rate_med": rate_med,
-            "rate_min": rate_min,
-            "rate_max": rate_max
-        }
-
-    return stats, phase_data
-
-def analyze_delete_updates():
-    if not RAW_CSV.exists():
+def analyze_delete_updates(raw_csv=None, mem_file=None):
+    csv_path = Path(raw_csv) if raw_csv else RAW_CSV
+    if not csv_path.exists():
         return {}
 
-    data = {} # (graph, batch_size) -> list of total_ms
+    edge_counts = load_graph_edge_counts(mem_file)
+    data = {} # (graph, effective_batch, clamped) -> list of total_ms
 
-    with open(RAW_CSV, "r") as f:
+    with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row.get("flags") == "--delete":
@@ -87,40 +118,17 @@ def analyze_delete_updates():
                 p = row["phase"]
                 t = float(row["time_ms"])
                 if p == "delete_total" and b > 0:
-                    data.setdefault((g, b), []).append(t)
+                    eff_b, clamped = effective_delete_batch(g, b, edge_counts)
+                    data.setdefault((g, eff_b, clamped), []).append(t)
 
-    stats = {}
-    for (g, b), times in sorted(data.items()):
-        arr = np.array(times)
-        med = np.median(arr)
-        min_t = np.min(arr)
-        max_t = np.max(arr)
-        q25 = np.percentile(arr, 25)
-        q75 = np.percentile(arr, 75)
-        iqr = q75 - q25
+    return _compute_rate_stats(data)
 
-        rate_med = b / (med / 1000.0)
-        rate_max = b / (min_t / 1000.0)
-        rate_min = b / (max_t / 1000.0)
-
-        stats[(g, b)] = {
-            "n": len(arr),
-            "med_ms": med,
-            "min_ms": min_t,
-            "max_ms": max_t,
-            "iqr_ms": iqr,
-            "rate_med": rate_med,
-            "rate_min": rate_min,
-            "rate_max": rate_max
-        }
-
-    return stats
-
-def analyze_dedup_comparison():
-    if not RAW_CSV.exists():
+def analyze_dedup_comparison(raw_csv=None):
+    csv_path = Path(raw_csv) if raw_csv else RAW_CSV
+    if not csv_path.exists():
         return {}
     data = {} # (graph, batch_size, flags) -> list of ms
-    with open(RAW_CSV, "r") as f:
+    with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             flags = row.get("flags", "")
@@ -133,8 +141,8 @@ def analyze_dedup_comparison():
                     data.setdefault((g, b, flags), []).append(t)
     res = {}
     for (g, b) in set((k[0], k[1]) for k in data.keys()):
-        t_dedup = np.median(data.get((g, b, "--graph-dedup"), [0.0]))
-        t_nodedup = np.median(data.get((g, b, "--no-dedup"), [0.0]))
+        t_dedup = float(np.median(data.get((g, b, "--graph-dedup"), [0.0])))
+        t_nodedup = float(np.median(data.get((g, b, "--no-dedup"), [0.0])))
         if t_dedup > 0 and t_nodedup > 0:
             speedup = t_dedup / t_nodedup
             res[(g, b)] = {
@@ -200,11 +208,12 @@ def analyze_amdahl_and_hotspots(phase_data):
 
     return amdahl_table, hotspots_table
 
-def analyze_memory():
-    if not MEM_FILE.exists():
+def analyze_memory(mem_file=None):
+    path = Path(mem_file) if mem_file else MEM_FILE
+    if not path.exists():
         return []
     records = []
-    with open(MEM_FILE, "r") as f:
+    with open(path, "r") as f:
         for line in f:
             if ("[MEMORY_SUMMARY]" in line and "BA_EXP" not in line) or "[MEMORY_SUMMARY BA_EXP=23]" in line:
                 m = re.search(r"Graph=(\S+)\s+\|V\|=(\d+)\s+\|E\|=(\d+).*block_util=([\d\.]+).*ba_util=([\d\.]+).*overall_util=([\d\.]+).*ba_count=(\d+).*vram_used_bytes=(\d+).*hornet_bpe=([\d\.]+).*csr_bpe=([\d\.]+).*coo_bpe=([\d\.]+)", line)
@@ -224,11 +233,12 @@ def analyze_memory():
                     })
     return records
 
-def analyze_init():
-    if not RAW_CSV.exists():
+def analyze_init(raw_csv=None):
+    csv_path = Path(raw_csv) if raw_csv else RAW_CSV
+    if not csv_path.exists():
         return {}
     init_data = {}
-    with open(RAW_CSV, "r") as f:
+    with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row["flags"] == "--init":
@@ -269,6 +279,54 @@ def analyze_overhead():
                         "overhead_pct": float(m.group(7))
                     })
     return records
+
+def analyze_bfs_spmv(bfs_file=None):
+    """Parse bfs_spmv_results.txt into (bfs_rows, spmv_rows) dicts keyed by graph."""
+    path = Path(bfs_file) if bfs_file else BFS_FILE
+    bfs_rows = {}
+    spmv_rows = {}
+    if not path.exists():
+        return bfs_rows, spmv_rows
+    with open(path, "r") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if not parts:
+                continue
+            if parts[0] == "BFS" and len(parts) >= 7:
+                bfs_rows[parts[1]] = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+            elif parts[0] == "SPMV" and len(parts) >= 5:
+                spmv_rows[parts[1]] = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+    return bfs_rows, spmv_rows
+
+
+def analyze_ktruss(ktruss_file=None):
+    """Parse KTRUSS_SUMMARY lines from ktruss_results.txt keyed by graph."""
+    path = Path(ktruss_file) if ktruss_file else KTRUSS_FILE
+    rows = {}
+    if not path.exists():
+        return rows
+    with open(path, "r") as f:
+        for line in f:
+            if line.startswith("KTRUSS_SUMMARY,"):
+                parts = line.strip().split(",")
+                rows[parts[1]] = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+    return rows
+
+
+def analyze_tc(tc_file=None):
+    """Parse DYNAMIC_TC lines from tc_results.txt keyed by (graph, batch_size)."""
+    path = Path(tc_file) if tc_file else TC_FILE
+    rows = {}
+    if not path.exists():
+        return rows
+    with open(path, "r") as f:
+        for line in f:
+            if line.startswith("DYNAMIC_TC,"):
+                parts = line.strip().split(",")
+                kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+                rows[(parts[1], int(kv.get("batch", 0)))] = kv
+    return rows
+
 
 def print_markdown_tables():
     overhead_recs = analyze_overhead()
@@ -312,8 +370,14 @@ def print_markdown_tables():
     print("\n=== TASK 4: DYNAMIC DELETE UPDATE RATES (MEDIAN, MIN, MAX, IQR) ===")
     print("| Graph | Batch Size | Median Time (ms) | IQR (ms) | Min (ms) | Max (ms) | Median Rate (updates/s) | Peak Rate (updates/s) |")
     print("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+    has_clamped_delete = False
     for (g, b), s in sorted(del_stats.items()):
-        print(f"| {g} | {b:,} | {s['med_ms']:.4f} | {s['iqr_ms']:.4f} | {s['min_ms']:.4f} | {s['max_ms']:.4f} | {s['rate_med']:,.0f} | {s['rate_max']:,.0f} |")
+        batch_label = f"{b:,}*" if s.get("clamped") else f"{b:,}"
+        if s.get("clamped"):
+            has_clamped_delete = True
+        print(f"| {g} | {batch_label} | {s['med_ms']:.4f} | {s['iqr_ms']:.4f} | {s['min_ms']:.4f} | {s['max_ms']:.4f} | {s['rate_med']:,.0f} | {s['rate_max']:,.0f} |")
+    if has_clamped_delete:
+        print("\n*Requested delete batch clamped by `select_random_edges` to the graph's total edge count (`|E|`); throughput reflects actual edges processed (`min(batch_size, |E|)`).*")
 
     dedup_comp = analyze_dedup_comparison()
     print("\n=== TASK 4: DEDUPLICATION IMPACT (WITH VS WITHOUT DEDUP) ===")
@@ -326,21 +390,7 @@ def print_markdown_tables():
     if BFS_FILE.exists():
         print("| Graph | Hornet BFS (ms) | CSR BFS (ms) | BFS MTEPS | BFS vs CSR | Hornet SpMV (ms) | CSR SpMV (ms) | SpMV vs CSR |")
         print("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-        bfs_rows = {}
-        spmv_rows = {}
-        with open(BFS_FILE, "r") as f:
-            for line in f:
-                parts = line.strip().split(",")
-                if not parts:
-                    continue
-                if parts[0] == "BFS" and len(parts) >= 7:
-                    g = parts[1]
-                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
-                    bfs_rows[g] = kv
-                elif parts[0] == "SPMV" and len(parts) >= 5:
-                    g = parts[1]
-                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
-                    spmv_rows[g] = kv
+        bfs_rows, spmv_rows = analyze_bfs_spmv()
         for g in sorted(set(bfs_rows.keys()) | set(spmv_rows.keys())):
             b = bfs_rows.get(g, {})
             s = spmv_rows.get(g, {})
@@ -354,32 +404,22 @@ def print_markdown_tables():
     if KTRUSS_FILE.exists():
         print("| Graph | Steps | Total Deleted Edges | Total Time (ms) | Peak Rate (updates/s) |")
         print("| :--- | :---: | :---: | :---: | :---: |")
-        with open(KTRUSS_FILE, "r") as f:
-            for line in f:
-                if line.startswith("KTRUSS_SUMMARY,"):
-                    parts = line.strip().split(",")
-                    g = parts[1]
-                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
-                    print(
-                        f"| {g} | {kv.get('steps', 'N/A')} | {int(kv.get('total_deleted', 0)):,} | "
-                        f"{kv.get('total_ms', 'N/A')} | {int(kv.get('peak_rate_upd_s', 0)):,} |"
-                    )
+        for g, kv in analyze_ktruss().items():
+            print(
+                f"| {g} | {kv.get('steps', 'N/A')} | {int(kv.get('total_deleted', 0)):,} | "
+                f"{kv.get('total_ms', 'N/A')} | {int(kv.get('peak_rate_upd_s', 0)):,} |"
+            )
 
     if TC_FILE.exists():
         print("\n=== DYNAMIC TRIANGLE COUNTING ===")
         print("| Graph | Batch Size | Insert (ms) | Query (ms) | Total (ms) | Rate (updates/s) | Delta Triangles |")
         print("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
-        with open(TC_FILE, "r") as f:
-            for line in f:
-                if line.startswith("DYNAMIC_TC,"):
-                    parts = line.strip().split(",")
-                    g = parts[1]
-                    kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
-                    print(
-                        f"| {g} | {int(kv.get('batch', 0)):,} | {kv.get('insert_ms', 'N/A')} | "
-                        f"{kv.get('query_ms', 'N/A')} | {kv.get('total_ms', 'N/A')} | "
-                        f"{int(kv.get('rate_upd_s', 0)):,} | {int(kv.get('delta_triangles', 0)):,} |"
-                    )
+        for (g, b), kv in analyze_tc().items():
+            print(
+                f"| {g} | {b:,} | {kv.get('insert_ms', 'N/A')} | "
+                f"{kv.get('query_ms', 'N/A')} | {kv.get('total_ms', 'N/A')} | "
+                f"{int(kv.get('rate_upd_s', 0)):,} | {int(kv.get('delta_triangles', 0)):,} |"
+            )
 
     print("\n=== TASK 7: PHASE HOTSPOT RANKINGS BY MEASURED SHARE ===")
     for h in hotspots_table:

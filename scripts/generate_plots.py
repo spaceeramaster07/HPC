@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 import numpy as np
 
+import analyze_results as ar
+
 # Ensure matplotlib runs headless and uses a writable cache directory
 os.environ["MPLCONFIGDIR"] = "/tmp/mpl_config"
 import matplotlib
@@ -363,6 +365,7 @@ def plot_delete_update_rate():
     if not RAW_CSV.exists():
         return
 
+    edge_counts = ar.load_graph_edge_counts(MEM_FILE)
     data = {}
     with open(RAW_CSV, "r") as f:
         reader = csv.DictReader(f)
@@ -370,8 +373,9 @@ def plot_delete_update_rate():
             if row["phase"] == "delete_total":
                 g = row["graph"]
                 b = int(row["batch_size"])
+                eff_b, _ = ar.effective_delete_batch(g, b, edge_counts)
                 t = float(row["time_ms"])
-                data.setdefault((g, b), []).append(t)
+                data.setdefault((g, eff_b), []).append(t)
 
     if not data:
         return
@@ -395,7 +399,7 @@ def plot_delete_update_rate():
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xlabel("Batch Size (edges deleted)")
+    ax.set_xlabel("Effective Batch Size (edges passed to delete, min(requested, |E|))")
     ax.set_ylabel("Deletion Rate (edges / second)")
     mode_suffix = f" ({MODE})" if MODE != "baseline" else ""
     ax.set_title(f"Hornet Dynamic Deletion Update Rate vs. Batch Size{mode_suffix}\n(RTX 4060 Laptop GPU, sm_89, WSL2)")

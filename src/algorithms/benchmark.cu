@@ -321,8 +321,8 @@ static void run_bench_delete_csr(const std::string& graph_name,
         CUDA_CHECK(cudaDeviceSynchronize());
         batch_delete(hg, ws);
         CUDA_CHECK(cudaDeviceSynchronize());
-        if (w == num_warmup - 1 && batch_size >= 1000000) {
-            log_vram_usage("delete graph=" + graph_name + " batch=" + std::to_string(batch_size));
+        if (w == num_warmup - 1 && b_src.size() >= 1000000) {
+            log_vram_usage("delete graph=" + graph_name + " batch=" + std::to_string(b_src.size()));
         }
     }
 
@@ -331,6 +331,7 @@ static void run_bench_delete_csr(const std::string& graph_name,
         uint64_t trial_seed = base_seed + t;
         std::vector<vid_t> b_src, b_dst;
         select_random_edges(init_src, init_dst, batch_size, trial_seed, b_src, b_dst);
+        const size_t actual_batch = b_src.size();
         ws.prepare(b_src, b_dst);
 
         if (enable_profiling) {
@@ -346,14 +347,14 @@ static void run_bench_delete_csr(const std::string& graph_name,
         auto end = std::chrono::high_resolution_clock::now();
         double trial_total_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
-        std::cout << graph_name << "," << batch_size << "," << t << ",delete_total,"
+        std::cout << graph_name << "," << actual_batch << "," << t << ",delete_total,"
                   << std::fixed << std::setprecision(4) << trial_total_ms << ","
                   << trial_seed << "," << flags << ",baseline_btree\n";
 
         if (enable_profiling) {
             for (const auto& kv : HornetProfiler::instance().get_all_phases()) {
                 if (kv.first != "delete_total") {
-                    std::cout << graph_name << "," << batch_size << "," << t << "," << kv.first << ","
+                    std::cout << graph_name << "," << actual_batch << "," << t << "," << kv.first << ","
                               << std::fixed << std::setprecision(4) << kv.second << ","
                               << trial_seed << "," << flags << ",baseline_btree\n";
                 }
